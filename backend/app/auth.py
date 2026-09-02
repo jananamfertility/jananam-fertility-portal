@@ -7,12 +7,10 @@ password) and sends the resulting access token to this API as
 that token and loads the caller's staff profile, so every route handler
 gets a trusted `StaffUser` instead of ever seeing a raw token.
 """
-import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
-from .config import get_settings
 from .database import get_supabase
 
 _bearer = HTTPBearer(auto_error=False)
@@ -26,27 +24,6 @@ class StaffUser(BaseModel):
     is_active: bool
 
 
-def _decode_token(token: str) -> dict:
-    settings = get_settings()
-    if not settings.supabase_jwt_secret:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="SUPABASE_JWT_SECRET is not configured on the server.",
-        )
-    try:
-        return jwt.decode(
-            token,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
-            audience="authenticated",
-        )
-    except jwt.PyJWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid or expired session ({exc}). Please log in again.",
-        ) from exc
-
-
 async def get_current_staff(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> StaffUser:
@@ -56,16 +33,31 @@ async def get_current_staff(
             detail="Missing Authorization header.",
         )
 
-    claims = _decode_token(credentials.credentials)
-    user_id = claims.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
-
     supabase = get_supabase()
+
+    # Verify the access token against Supabase Auth itself, rather than
+    # decoding it locally. This works no matter which signing scheme the
+    # project uses (legacy shared HS256 secret, or the newer asymmetric
+    # JWT signing keys) and never falls out of sync with a rotated secret.
+    try:
+        user_resp = supabase.auth.get_user(credentials.credentials)
+    except Exception as exc:  # supabase-py raises on invalid/expired tokens
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid or expired session ({exc}). Please log in again.",
+        ) from exc
+
+    user = user_resp.user if user_resp else None
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session. Please log in again.",
+        )
+
     result = (
         supabase.table("staff_profiles")
         .select("id, full_name, role, is_active")
-        .eq("id", user_id)
+        .eq("id", user.id)
         .maybe_single()
         .execute()
     )
@@ -86,7 +78,7 @@ async def get_current_staff(
 
     return StaffUser(
         id=profile["id"],
-        email=claims.get("email"),
+        email=user.email,
         full_name=profile["full_name"],
         role=profile["role"],
         is_active=profile["is_active"],
