@@ -37,6 +37,23 @@ function combine(dateStr: string, timeStr: string): Date {
   return new Date(`${dateStr}T${timeStr}:00`);
 }
 
+// 15-minute slots from 7:00 AM to 9:45 PM — covers clinic hours with room
+// to spare. Native <input type="time"> pickers (Safari's wheel especially)
+// don't reliably honor a `step`, so we build an explicit dropdown instead.
+function buildTimeOptions(): { value: string; label: string }[] {
+  const options: { value: string; label: string }[] = [];
+  for (let minutes = 7 * 60; minutes <= 21 * 60 + 45; minutes += 15) {
+    const h24 = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    const value = `${String(h24).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+    const ampm = h24 < 12 ? "AM" : "PM";
+    options.push({ value, label: `${h12}:${String(m).padStart(2, "0")} ${ampm}` });
+  }
+  return options;
+}
+const TIME_OPTIONS = buildTimeOptions();
+
 const DEFAULT_DURATION_MIN: Record<AppointmentType, number> = {
   consultation: 30,
   follow_up: 20,
@@ -282,21 +299,29 @@ export default function AppointmentModal({
             </div>
             <div className="field">
               <label>Start</label>
-              <input
-                type="time"
-                step={900}
-                value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
-              />
+              <select value={startTime} onChange={(e) => setStartTime(e.target.value)}>
+                {!TIME_OPTIONS.some((o) => o.value === startTime) && (
+                  <option value={startTime}>{startTime}</option>
+                )}
+                {TIME_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="field">
               <label>End</label>
-              <input
-                type="time"
-                step={900}
-                value={endTime}
-                onChange={(e) => setEndTime(e.target.value)}
-              />
+              <select value={endTime} onChange={(e) => setEndTime(e.target.value)}>
+                {!TIME_OPTIONS.some((o) => o.value === endTime) && (
+                  <option value={endTime}>{endTime}</option>
+                )}
+                {TIME_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
