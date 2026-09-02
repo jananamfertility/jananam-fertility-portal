@@ -61,7 +61,7 @@ async def get_current_staff(
         .maybe_single()
         .execute()
     )
-    profile = result.data
+    profile = result.data if result else None
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

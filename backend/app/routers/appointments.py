@@ -24,7 +24,7 @@ def _find_or_create_patient(supabase, patient_id: str | None, patient_in) -> str
         found = (
             supabase.table("patients").select("id").eq("id", patient_id).maybe_single().execute()
         )
-        if not found.data:
+        if not found or not found.data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found.")
         return patient_id
 
@@ -41,7 +41,7 @@ def _find_or_create_patient(supabase, patient_id: str | None, patient_in) -> str
         .maybe_single()
         .execute()
     )
-    if existing.data:
+    if existing and existing.data:
         return existing.data["id"]
 
     created = supabase.table("patients").insert(patient_in.model_dump()).execute()
@@ -79,7 +79,7 @@ def get_appointment(appointment_id: str, _staff: StaffUser = Depends(get_current
         .maybe_single()
         .execute()
     )
-    if not result.data:
+    if not result or not result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found.")
     return result.data
 
@@ -130,7 +130,7 @@ def update_appointment(
         .maybe_single()
         .execute()
     )
-    if not existing.data:
+    if not existing or not existing.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found.")
 
     update: dict = {"updated_by": staff.id}

@@ -26,7 +26,7 @@ def list_patients(
 def get_patient(patient_id: str, _staff: StaffUser = Depends(get_current_staff)):
     supabase = get_supabase()
     result = supabase.table("patients").select("*").eq("id", patient_id).maybe_single().execute()
-    if not result.data:
+    if not result or not result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found.")
     return result.data
 
@@ -37,7 +37,7 @@ def create_patient(payload: PatientIn, _staff: StaffUser = Depends(get_current_s
     existing = (
         supabase.table("patients").select("*").eq("phone", payload.phone).maybe_single().execute()
     )
-    if existing.data:
+    if existing and existing.data:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"A patient with this phone number already exists ({existing.data['full_name']}).",

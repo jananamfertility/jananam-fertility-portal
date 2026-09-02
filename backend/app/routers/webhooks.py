@@ -108,7 +108,7 @@ async def receive_webhook(
                             "to_phone": to_phone,
                             "body": body_text,
                             "raw_payload": message,
-                            "patient_id": patient.data["id"] if patient.data else None,
+                            "patient_id": patient.data["id"] if patient and patient.data else None,
                             "conversation_id": conversation["id"],
                         }
                     ).execute()

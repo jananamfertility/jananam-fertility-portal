@@ -81,10 +81,13 @@ def log_event(supabase, conversation_id: str, event_type: str, from_stage=None, 
 
 
 def get_or_create_conversation(supabase, phone: str, display_name: str | None) -> dict:
+    # NOTE: maybe_single() returns None outright (not a response object with
+    # .data = None) when zero rows match, on the supabase-py version this
+    # project pins — so `existing` itself, not just `.data`, needs the guard.
     existing = (
         supabase.table("whatsapp_conversations").select("*").eq("phone", phone).maybe_single().execute()
     )
-    if existing.data:
+    if existing and existing.data:
         if display_name and not existing.data.get("display_name"):
             supabase.table("whatsapp_conversations").update({"display_name": display_name}).eq(
                 "id", existing.data["id"]
@@ -167,12 +170,12 @@ def _send_time_menu(phone: str):
 
 def _existing_patient_name(supabase, phone: str) -> str | None:
     existing = supabase.table("patients").select("full_name").eq("phone", phone).maybe_single().execute()
-    return existing.data["full_name"] if existing.data else None
+    return existing.data["full_name"] if existing and existing.data else None
 
 
 def _find_or_create_patient(supabase, phone: str, full_name: str) -> str:
     existing = supabase.table("patients").select("id").eq("phone", phone).maybe_single().execute()
-    if existing.data:
+    if existing and existing.data:
         return existing.data["id"]
     created = supabase.table("patients").insert({"full_name": full_name, "phone": phone}).execute()
     return created.data[0]["id"]
@@ -182,7 +185,7 @@ def _send_my_appointments_menu(supabase, conversation: dict, phone: str):
     patient_id = conversation.get("patient_id")
     if not patient_id:
         existing = supabase.table("patients").select("id").eq("phone", phone).maybe_single().execute()
-        patient_id = existing.data["id"] if existing.data else None
+        patient_id = existing.data["id"] if existing and existing.data else None
     if not patient_id:
         wa.send_text(phone, "I don't see any appointments booked under this number yet. Type MENU to book one.")
         return
@@ -409,7 +412,7 @@ def _handle_interactive_reply(supabase, conversation: dict, phone: str, reply_id
             .maybe_single()
             .execute()
         )
-        if not appt.data:
+        if not appt or not appt.data:
             wa.send_text(phone, "Sorry, I couldn't find that appointment anymore.")
             return
         pending = {

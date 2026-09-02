@@ -224,7 +224,7 @@ def sync_template_status(template_id: str, _staff: StaffUser = Depends(require_a
     """
     supabase = get_supabase()
     template = supabase.table("whatsapp_templates").select("*").eq("id", template_id).maybe_single().execute()
-    if not template.data:
+    if not template or not template.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found.")
 
     meta_name = template.data.get("meta_template_name") or template.data["name"]
@@ -255,7 +255,7 @@ def send_retargeting_campaign(payload: RetargetRequest, _staff: StaffUser = Depe
     template = (
         supabase.table("whatsapp_templates").select("*").eq("id", payload.template_id).maybe_single().execute()
     )
-    if not template.data:
+    if not template or not template.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found.")
     if template.data["status"] != "approved":
         raise HTTPException(
