@@ -282,11 +282,21 @@ export default function AppointmentModal({
             </div>
             <div className="field">
               <label>Start</label>
-              <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+              <input
+                type="time"
+                step={900}
+                value={startTime}
+                onChange={(e) => setStartTime(e.target.value)}
+              />
             </div>
             <div className="field">
               <label>End</label>
-              <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+              <input
+                type="time"
+                step={900}
+                value={endTime}
+                onChange={(e) => setEndTime(e.target.value)}
+              />
             </div>
           </div>
 
