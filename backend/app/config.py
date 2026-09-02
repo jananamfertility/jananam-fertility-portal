@@ -53,6 +53,32 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_model: str = "anthropic/claude-sonnet-4.5"
 
+    # Per-contact AI usage cap — bounds OpenRouter spend/abuse from any one
+    # WhatsApp number. Once a contact hits ai_max_calls_per_window free-text
+    # AI replies inside ai_rate_window_hours, the bot falls back to the
+    # guided menu instead of calling the AI again until the window rolls over.
+    ai_max_calls_per_window: int = 20
+    ai_rate_window_hours: int = 24
+
+    # Default country code (digits only, no +) used to interpret a bare
+    # 10-digit phone number typed into the portal, so it normalizes to the
+    # same E.164-without-plus shape WhatsApp's webhook sends inbound numbers
+    # in (e.g. "9812345678" -> "919812345678"). Change this if the clinic is
+    # not in India.
+    default_country_code: str = "91"
+
+    # Optional: real out-of-band email alert when the AI bot flags a message
+    # as needing human attention (possible medical emergency, or an explicit
+    # request to speak to a person). Without these, the alert still shows in
+    # the admin portal, it just won't also email anyone.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_use_tls: bool = True
+    staff_alert_email_to: str = ""
+
     @property
     def cors_origin_list(self) -> List[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

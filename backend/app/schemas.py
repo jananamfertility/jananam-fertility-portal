@@ -5,6 +5,9 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from .config import get_settings
+from .phone_utils import normalize_phone as _normalize_phone
+
 
 class AppointmentType(str, Enum):
     consultation = "consultation"
@@ -76,7 +79,10 @@ class PatientIn(BaseModel):
     @field_validator("phone")
     @classmethod
     def normalize_phone(cls, v: str) -> str:
-        cleaned = "".join(ch for ch in v if ch.isdigit() or ch == "+")
+        # Shared with the WhatsApp bot (see phone_utils.normalize_phone) so
+        # a patient entered here and the same person messaging on WhatsApp
+        # always resolve to the same row instead of creating a duplicate.
+        cleaned = _normalize_phone(v, get_settings().default_country_code)
         if len(cleaned) < 6:
             raise ValueError("Phone number looks too short.")
         return cleaned
@@ -216,6 +222,12 @@ class FunnelSummary(BaseModel):
     total_contacts: int
     current_by_stage: dict[str, int]        # snapshot: current stage of every contact
     ever_reached_by_stage: dict[str, int]   # funnel: how many contacts ever reached each stage
+    # Stage-to-stage conversion, computed from ever_reached_by_stage within this range
+    # (e.g. "interest": 0.62 means 62% of contacts who reached awareness also reached
+    # interest). This is a range-level ratio, not a strict per-contact cohort trace —
+    # a contact who jumped straight from awareness to action is counted at the deepest
+    # stage they reached, same as ever_reached_by_stage above.
+    conversion_rates: dict[str, float]
     opted_in: int
     opted_in_rate: float
     bookings_from_whatsapp: int
@@ -262,3 +274,32 @@ class RetargetResult(BaseModel):
     sent: int
     skipped_not_opted_in: int
     failed: int
+    remaining: int = 0  # matched contacts beyond this call's batch cap — re-run to send them
+
+
+# ---------------------------------------------------------------------------
+# Staff alerts — raised when the AI bot flags an inbound message as needing
+# human attention (possible medical emergency, or an explicit request to
+# talk to a person), so it's a real, visible item in the admin portal
+# instead of only a reply sitting in the chat log.
+# ---------------------------------------------------------------------------
+class StaffAlertOut(BaseModel):
+    id: str
+    alert_type: str
+    conversation_id: str
+    phone: str
+    message_excerpt: Optional[str] = None
+    created_at: datetime
+    acknowledged_at: Optional[datetime] = None
+    acknowledged_by: Optional[str] = None
+
+
+class IntegrationStatus(BaseModel):
+    configured: bool
+    ok: bool
+    detail: str
+
+
+class IntegrationsHealth(BaseModel):
+    whatsapp: IntegrationStatus
+    openrouter: IntegrationStatus

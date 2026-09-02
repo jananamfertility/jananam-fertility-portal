@@ -131,10 +131,33 @@ export interface FunnelSummary {
   total_contacts: number;
   current_by_stage: Record<string, number>;
   ever_reached_by_stage: Record<string, number>;
+  conversion_rates: Record<string, number>;
   opted_in: number;
   opted_in_rate: number;
   bookings_from_whatsapp: number;
   messages_in_range: number;
+}
+
+export interface StaffAlert {
+  id: string;
+  alert_type: string;
+  conversation_id: string;
+  phone: string;
+  message_excerpt?: string | null;
+  created_at: string;
+  acknowledged_at?: string | null;
+  acknowledged_by?: string | null;
+}
+
+export interface IntegrationStatus {
+  configured: boolean;
+  ok: boolean;
+  detail: string;
+}
+
+export interface IntegrationsHealth {
+  whatsapp: IntegrationStatus;
+  openrouter: IntegrationStatus;
 }
 
 export interface MessageTemplate {
@@ -163,6 +186,7 @@ export interface RetargetResult {
   sent: number;
   skipped_not_opted_in: number;
   failed: number;
+  remaining: number;
 }
 
 export interface ReportSummary {

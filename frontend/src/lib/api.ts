@@ -4,6 +4,7 @@ import type {
   Appointment,
   AppointmentInput,
   FunnelSummary,
+  IntegrationsHealth,
   MessageTemplate,
   Patient,
   PatientInput,
@@ -11,6 +12,7 @@ import type {
   ReportSummary,
   RetargetResult,
   StaffAccount,
+  StaffAlert,
   StaffCreateInput,
   StaffProfile,
   TemplateInput,
@@ -166,5 +168,25 @@ export async function sendRetargetCampaign(payload: {
   inactive_days: number;
 }): Promise<RetargetResult> {
   const { data } = await api.post<RetargetResult>("/api/marketing/retarget", payload);
+  return data;
+}
+
+export async function syncTemplateStatus(id: string): Promise<MessageTemplate> {
+  const { data } = await api.post<MessageTemplate>(`/api/marketing/templates/${id}/sync-status`);
+  return data;
+}
+
+export async function fetchAlerts(params?: { unacknowledged_only?: boolean }): Promise<StaffAlert[]> {
+  const { data } = await api.get<StaffAlert[]>("/api/marketing/alerts", { params });
+  return data;
+}
+
+export async function acknowledgeAlert(id: string): Promise<StaffAlert> {
+  const { data } = await api.post<StaffAlert>(`/api/marketing/alerts/${id}/acknowledge`);
+  return data;
+}
+
+export async function fetchIntegrationsHealth(): Promise<IntegrationsHealth> {
+  const { data } = await api.get<IntegrationsHealth>("/api/marketing/integrations-health");
   return data;
 }

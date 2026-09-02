@@ -1,16 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  acknowledgeAlert,
   createTemplate,
+  fetchAlerts,
   fetchConversations,
   fetchFunnelSummary,
+  fetchIntegrationsHealth,
   fetchTemplates,
   sendRetargetCampaign,
+  syncTemplateStatus,
   updateTemplate,
 } from "../../lib/api";
 import type {
   FunnelStage,
   FunnelSummary,
+  IntegrationsHealth,
   MessageTemplate,
+  StaffAlert,
   TemplateCategory,
   WhatsAppConversation,
 } from "../../lib/types";
@@ -65,6 +71,8 @@ export default function MarketingAdmin() {
   const [summary, setSummary] = useState<FunnelSummary | null>(null);
   const [conversations, setConversations] = useState<WhatsAppConversation[]>([]);
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [alerts, setAlerts] = useState<StaffAlert[]>([]);
+  const [health, setHealth] = useState<IntegrationsHealth | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -75,20 +83,25 @@ export default function MarketingAdmin() {
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [campaignBusy, setCampaignBusy] = useState<string | null>(null);
   const [campaignResult, setCampaignResult] = useState<string | null>(null);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
     setError(null);
     try {
       const { start, end } = monthRange(month);
-      const [s, c, t] = await Promise.all([
+      const [s, c, t, a, h] = await Promise.all([
         fetchFunnelSummary({ start, end }),
         fetchConversations(),
         fetchTemplates(),
+        fetchAlerts({ unacknowledged_only: true }),
+        fetchIntegrationsHealth().catch(() => null),
       ]);
       setSummary(s);
       setConversations(c);
       setTemplates(t);
+      setAlerts(a);
+      setHealth(h);
     } catch {
       setError("Could not load marketing data.");
     } finally {
@@ -100,6 +113,23 @@ export default function MarketingAdmin() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month]);
+
+  async function handleAcknowledge(alertId: string) {
+    await acknowledgeAlert(alertId);
+    setAlerts((prev) => prev.filter((a) => a.id !== alertId));
+  }
+
+  async function handleSyncStatus(t: MessageTemplate) {
+    setSyncingId(t.id);
+    try {
+      await syncTemplateStatus(t.id);
+      await load();
+    } catch (err: any) {
+      alert(err?.response?.data?.detail ?? "Could not verify this template's status with Meta yet.");
+    } finally {
+      setSyncingId(null);
+    }
+  }
 
   const maxFunnel = useMemo(
     () => (summary ? Math.max(1, ...STAGES.map((s) => summary.ever_reached_by_stage[s] ?? 0)) : 1),
@@ -166,7 +196,10 @@ export default function MarketingAdmin() {
       });
       setCampaignResult(
         `"${t.name}": ${result.sent} sent, ${result.skipped_not_opted_in} skipped (not opted in), ` +
-          `${result.failed} failed, out of ${result.matched} matching contacts.`
+          `${result.failed} failed, out of ${result.matched} matching contacts.` +
+          (result.remaining > 0
+            ? ` ${result.remaining} more matched but weren't sent this batch (pacing cap) — run the campaign again to reach them.`
+            : "")
       );
     } catch (err: any) {
       alert(err?.response?.data?.detail ?? "Could not send this campaign.");
@@ -183,9 +216,55 @@ export default function MarketingAdmin() {
           <p className="panel-sub">
             AIDA funnel stages, opt-in, and retargeting for the WhatsApp bot on your website.
           </p>
+          {health && (
+            <p className="panel-sub" style={{ marginTop: 4 }}>
+              <span className={`pill ${health.whatsapp.ok ? "pill-active" : "pill-inactive"}`} title={health.whatsapp.detail}>
+                WhatsApp: {health.whatsapp.configured ? (health.whatsapp.ok ? "Connected" : "Error") : "Not configured"}
+              </span>{" "}
+              <span className={`pill ${health.openrouter.ok ? "pill-active" : "pill-inactive"}`} title={health.openrouter.detail}>
+                AI (OpenRouter): {health.openrouter.configured ? (health.openrouter.ok ? "Connected" : "Error") : "Not configured"}
+              </span>
+            </p>
+          )}
         </div>
         <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} aria-label="Select month" />
       </div>
+
+      {alerts.length > 0 && (
+        <div className="admin-card" style={{ borderLeft: "4px solid #c0392b", background: "#fdf1f0" }}>
+          <h3 style={{ color: "#c0392b" }}>⚠️ {alerts.length} alert{alerts.length === 1 ? "" : "s"} need attention</h3>
+          <p className="panel-sub">
+            The AI bot flagged these WhatsApp messages as a possible emergency or an explicit request to talk
+            to a person. Contact the patient directly if needed, then acknowledge.
+          </p>
+          <div className="admin-table-wrap">
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th>Phone</th>
+                  <th>When</th>
+                  <th>Message</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {alerts.map((a) => (
+                  <tr key={a.id}>
+                    <td>{a.phone}</td>
+                    <td>{timeAgo(a.created_at)}</td>
+                    <td style={{ maxWidth: 320 }}>{a.message_excerpt || "—"}</td>
+                    <td>
+                      <button className="btn-secondary btn-sm" onClick={() => handleAcknowledge(a.id)}>
+                        Acknowledge
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {loading && <p className="panel-sub">Loading…</p>}
       {error && <p className="error-text">{error}</p>}
@@ -219,6 +298,15 @@ export default function MarketingAdmin() {
                   <FunnelBar key={s} stage={s} value={summary.ever_reached_by_stage[s] ?? 0} max={maxFunnel} />
                 ))}
               </div>
+              <p className="panel-sub" style={{ marginTop: 10 }}>
+                Stage-to-stage conversion this month:{" "}
+                {STAGES.slice(1)
+                  .map((s) => `${FUNNEL_STAGE_LABELS[s]} ${((summary.conversion_rates[s] ?? 0) * 100).toFixed(0)}%`)
+                  .join(" · ")}
+                . This is a range-level ratio (how many contacts who reached the previous stage also reached
+                this one), not a per-contact cohort trace — a contact who jumped straight from Awareness to
+                Action is counted at the deepest stage they reached.
+              </p>
             </div>
 
             <div className="admin-card">
@@ -360,10 +448,20 @@ export default function MarketingAdmin() {
                         </span>
                       </td>
                       <td style={{ maxWidth: 280 }}>{t.body}</td>
-                      <td>
+                      <td style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                         {t.status === "draft" && (
                           <button className="btn-secondary btn-sm" onClick={() => markSubmitted(t)}>
                             Mark submitted
+                          </button>
+                        )}
+                        {(t.status === "submitted" || t.status === "draft") && (
+                          <button
+                            className="btn-secondary btn-sm"
+                            disabled={syncingId === t.id}
+                            onClick={() => handleSyncStatus(t)}
+                            title="Check the real status with Meta instead of setting it manually"
+                          >
+                            {syncingId === t.id ? "Checking…" : "Sync status"}
                           </button>
                         )}
                         {t.status === "submitted" && (

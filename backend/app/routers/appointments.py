@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import StaffUser, get_current_staff
 from ..database import get_supabase
+from ..scheduling import has_overlap
 from ..schemas import (
     AppointmentCreate,
     AppointmentOut,
@@ -88,6 +89,14 @@ def create_appointment(payload: AppointmentCreate, staff: StaffUser = Depends(ge
     supabase = get_supabase()
     patient_id = _find_or_create_patient(supabase, payload.patient_id, payload.patient)
 
+    if payload.provider_id and payload.status != AppointmentStatus.cancelled and has_overlap(
+        supabase, payload.provider_id, payload.starts_at.isoformat(), payload.ends_at.isoformat()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This provider already has an appointment during that time.",
+        )
+
     row = {
         "patient_id": patient_id,
         "provider_id": payload.provider_id,
@@ -116,7 +125,7 @@ def update_appointment(
     supabase = get_supabase()
     existing = (
         supabase.table("appointments")
-        .select("id, starts_at, ends_at")
+        .select("id, starts_at, ends_at, provider_id, status")
         .eq("id", appointment_id)
         .maybe_single()
         .execute()
@@ -147,6 +156,24 @@ def update_appointment(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="ends_at must be after starts_at.",
+        )
+
+    final_provider_id = update.get("provider_id", existing.data["provider_id"])
+    final_status = update.get("status", existing.data["status"])
+    if (
+        final_provider_id
+        and final_status != AppointmentStatus.cancelled.value
+        and has_overlap(
+            supabase,
+            final_provider_id,
+            starts_at.isoformat(),
+            ends_at.isoformat(),
+            exclude_appointment_id=appointment_id,
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This provider already has an appointment during that time.",
         )
 
     supabase.table("appointments").update(update).eq("id", appointment_id).execute()

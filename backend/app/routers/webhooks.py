@@ -13,6 +13,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 from ..bot_flow import get_or_create_conversation, handle_inbound_message
 from ..config import get_settings
 from ..database import get_supabase
+from ..phone_utils import normalize_phone
 
 router = APIRouter(prefix="/api/webhooks/whatsapp", tags=["webhooks"])
 logger = logging.getLogger("whatsapp_webhook")
@@ -77,7 +78,13 @@ async def receive_webhook(
                 profile_name = (contacts[0].get("profile") or {}).get("name")
 
             for message in value.get("messages", []):
-                from_phone = message.get("from", "")
+                # WhatsApp already sends "from" in the canonical
+                # digits-with-country-code shape, but normalize it through
+                # the same function the portal uses anyway — cheap
+                # insurance against Meta ever changing that, and it keeps
+                # this the single source of truth for "what does a phone
+                # number look like once it's in our database".
+                from_phone = normalize_phone(message.get("from", ""), settings.default_country_code)
                 to_phone = value.get("metadata", {}).get("display_phone_number", "")
                 wa_message_id = message.get("id")
                 body_text = (message.get("text") or {}).get("body")

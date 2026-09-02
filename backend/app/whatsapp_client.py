@@ -112,6 +112,61 @@ def send_list_menu(
     )
 
 
+def check_health() -> dict:
+    """Lightweight reachability check for the admin portal's integrations panel."""
+    settings = get_settings()
+    if not _configured():
+        return {
+            "configured": False,
+            "ok": False,
+            "detail": "WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID are not set.",
+        }
+    try:
+        resp = httpx.get(
+            f"https://graph.facebook.com/{GRAPH_API_VERSION}/{settings.whatsapp_phone_number_id}",
+            params={"fields": "id"},
+            headers=_headers(),
+            timeout=8.0,
+        )
+        if resp.status_code == 200:
+            return {"configured": True, "ok": True, "detail": "Connected."}
+        return {
+            "configured": True,
+            "ok": False,
+            "detail": f"Graph API returned HTTP {resp.status_code} — the access token may have expired.",
+        }
+    except httpx.HTTPError as exc:
+        return {"configured": True, "ok": False, "detail": f"Request to the Graph API failed: {exc}"}
+
+
+def fetch_template_status(template_name: str) -> str | None:
+    """
+    Looks up a template's real approval status from Meta (APPROVED / PENDING
+    / REJECTED / IN_APPEAL / PAUSED / DISABLED), so the admin portal doesn't
+    have to trust a manually-set flag. Returns None if this can't be
+    determined yet (business account ID not configured, or no matching
+    template found) rather than guessing.
+    """
+    settings = get_settings()
+    if not settings.whatsapp_access_token or not settings.whatsapp_business_account_id:
+        return None
+    try:
+        resp = httpx.get(
+            f"https://graph.facebook.com/{GRAPH_API_VERSION}/{settings.whatsapp_business_account_id}/message_templates",
+            params={"name": template_name},
+            headers=_headers(),
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        if not data:
+            return None
+        return data[0].get("status")
+    except httpx.HTTPError as exc:
+        logger.error("Template status check for %r failed: %s", template_name, exc)
+        return None
+
+
 def send_template(to_phone: str, template_name: str, language_code: str, variables: list[str]) -> dict | None:
     """
     Sends a pre-approved Meta template message (the only kind allowed

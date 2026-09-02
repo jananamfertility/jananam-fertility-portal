@@ -1,21 +1,26 @@
 """
 The WhatsApp bot's orchestration: for every inbound message, decides whether
-it's a step in the guided booking menu, an opt-in/opt-out command, or a
-free-text question to hand to the AI (see ai_bot.py) — then sends the
-appropriate reply, updates the contact's funnel stage, and logs everything
-to whatsapp_funnel_events for the Marketing tab.
+it's a step in the guided booking menu, an opt-in/opt-out command, a request
+to view/cancel/reschedule an existing appointment, or a free-text question
+to hand to the AI (see ai_bot.py) — then sends the appropriate reply,
+updates the contact's funnel stage, and logs everything to
+whatsapp_funnel_events for the Marketing tab.
 
 Booking itself reuses the exact same patient-find-or-create + appointment
 insert shape as routers.appointments.create_appointment, just with
-source="whatsapp".
+source="whatsapp", and runs every booking/reschedule through the same
+provider-overlap check the portal API uses (see scheduling.has_overlap) so
+neither path can double-book a provider.
 """
 import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from . import alerting
 from . import whatsapp_client as wa
 from .ai_bot import get_reply
 from .config import get_settings
+from .scheduling import has_overlap
 
 logger = logging.getLogger("bot_flow")
 
@@ -37,6 +42,11 @@ DEFAULT_DURATION_MIN = {"consultation": 30, "follow_up": 20, "nt_scan": 45}
 OPT_OUT_WORDS = {"stop", "unsubscribe", "opt out", "optout"}
 OPT_IN_WORDS = {"yes", "y", "start", "subscribe"}
 RESTART_WORDS = {"menu", "restart", "start over", "cancel"}
+MY_APPOINTMENTS_WORDS = {
+    "my appointments", "my appointment", "appointments", "my bookings",
+    "my booking", "view appointments", "upcoming appointments",
+}
+_CONFIRM_WORDS = {"yes", "y", "yeah", "yep", "correct", "that's me", "thats me", "right"}
 
 WELCOME_TEXT = (
     "Hi! 👋 Welcome to Jananam Fertility Centre. I can answer general questions about our "
@@ -46,6 +56,12 @@ WELCOME_TEXT = (
 )
 
 _STAGE_ORDER = ["awareness", "interest", "desire", "action", "booked"]
+
+# Free-text messages longer than this are truncated before being sent to the
+# AI model — keeps a single message from ballooning cost, and bounds how
+# much text a prompt-injection attempt can stuff into one turn. The full
+# message is still stored in whatsapp_messages either way.
+_AI_MESSAGE_CHAR_LIMIT = 1500
 
 
 def _now_iso() -> str:
@@ -149,6 +165,11 @@ def _send_time_menu(phone: str):
     wa.send_list_menu(phone, "What time?", "Choose time", "Available times", rows)
 
 
+def _existing_patient_name(supabase, phone: str) -> str | None:
+    existing = supabase.table("patients").select("full_name").eq("phone", phone).maybe_single().execute()
+    return existing.data["full_name"] if existing.data else None
+
+
 def _find_or_create_patient(supabase, phone: str, full_name: str) -> str:
     existing = supabase.table("patients").select("id").eq("phone", phone).maybe_single().execute()
     if existing.data:
@@ -157,17 +178,72 @@ def _find_or_create_patient(supabase, phone: str, full_name: str) -> str:
     return created.data[0]["id"]
 
 
-def _complete_booking(supabase, conversation: dict, phone: str, full_name: str, wa_message_id: str):
+def _send_my_appointments_menu(supabase, conversation: dict, phone: str):
+    patient_id = conversation.get("patient_id")
+    if not patient_id:
+        existing = supabase.table("patients").select("id").eq("phone", phone).maybe_single().execute()
+        patient_id = existing.data["id"] if existing.data else None
+    if not patient_id:
+        wa.send_text(phone, "I don't see any appointments booked under this number yet. Type MENU to book one.")
+        return
+
+    now_utc_iso = datetime.now(ZoneInfo("UTC")).isoformat()
+    rows_data = (
+        supabase.table("appointments")
+        .select("id, appointment_type, starts_at")
+        .eq("patient_id", patient_id)
+        .in_("status", ["scheduled", "confirmed"])
+        .gte("starts_at", now_utc_iso)
+        .order("starts_at")
+        .limit(8)
+        .execute()
+        .data
+    )
+    if not rows_data:
+        wa.send_text(phone, "You don't have any upcoming appointments booked. Type MENU to book one.")
+        return
+
+    rows = []
+    for r in rows_data:
+        starts = datetime.fromisoformat(r["starts_at"]).astimezone(_clinic_tz())
+        label = APPOINTMENT_TYPE_LABELS.get(r["appointment_type"], r["appointment_type"])
+        when = starts.strftime("%a %d %b, %I:%M %p").replace(" 0", " ")
+        rows.append((f"appt_{r['id']}", when, label))
+    wa.send_list_menu(
+        phone,
+        "Here are your upcoming appointments — tap one to cancel or reschedule it.",
+        "View",
+        "Your appointments",
+        rows,
+    )
+
+
+def _attempt_booking(supabase, conversation: dict, phone: str, given_name: str, wa_message_id: str, family_mismatch: bool):
     pending = conversation["pending_booking"]
     appt_type = pending["type"]
     provider_id = None if pending["provider_id"] == "any" else pending["provider_id"]
-    # The date/time menus offer clinic-local wall-clock slots — localize
-    # explicitly so this doesn't get stored as if it were UTC.
     naive = datetime.fromisoformat(f"{pending['date']}T{pending['time']}:00")
     starts_at = naive.replace(tzinfo=_clinic_tz())
     ends_at = starts_at + timedelta(minutes=DEFAULT_DURATION_MIN[appt_type])
 
-    patient_id = _find_or_create_patient(supabase, phone, full_name)
+    if provider_id and has_overlap(supabase, provider_id, starts_at.isoformat(), ends_at.isoformat()):
+        # Slot got taken between the menu being shown and the name being
+        # collected — keep everything else we already know and only ask
+        # for a new time, instead of restarting the whole flow.
+        retry_pending = {**pending, "step": "time", "name": given_name, "family_mismatch": family_mismatch}
+        _set_pending(supabase, conversation, retry_pending)
+        wa.send_text(phone, "Sorry — that slot was just taken. Please pick another time:")
+        _send_time_menu(phone)
+        return
+
+    patient_id = _find_or_create_patient(supabase, phone, given_name)
+
+    notes = None
+    if family_mismatch:
+        notes = (
+            f'Booked via WhatsApp for "{given_name}" — this phone number\'s patient record is under a '
+            "different name. Please verify who this appointment is actually for before confirming."
+        )
 
     created = (
         supabase.table("appointments")
@@ -181,6 +257,7 @@ def _complete_booking(supabase, conversation: dict, phone: str, full_name: str, 
                 "ends_at": ends_at.isoformat(),
                 "source": "whatsapp",
                 "whatsapp_message_id": wa_message_id,
+                "notes": notes,
             }
         )
         .execute()
@@ -195,15 +272,54 @@ def _complete_booking(supabase, conversation: dict, phone: str, full_name: str, 
         supabase,
         conversation["id"],
         "booking_completed",
-        metadata={"appointment_id": created.data[0]["id"], "appointment_type": appt_type},
+        metadata={
+            "appointment_id": created.data[0]["id"],
+            "appointment_type": appt_type,
+            "family_mismatch": family_mismatch,
+        },
     )
+
+    label = APPOINTMENT_TYPE_LABELS[appt_type]
+    confirm = (
+        f"You're booked! ✅\n\n{label} on {starts_at.strftime('%A, %d %B')} at "
+        f"{starts_at.strftime('%I:%M %p').lstrip('0')}.\n\n"
+    )
+    if family_mismatch:
+        confirm += "Our front office will confirm the patient's details with you shortly. "
+    else:
+        confirm += "Our front office will confirm shortly. "
+    confirm += "Reply MENU any time to start over, or MY APPOINTMENTS to see your bookings."
+    wa.send_text(phone, confirm)
+
+
+def _attempt_reschedule(supabase, conversation: dict, phone: str):
+    pending = conversation["pending_booking"]
+    appt_id = pending["reschedule_appointment_id"]
+    appt_type = pending["type"]
+    provider_id = None if pending["provider_id"] == "any" else pending["provider_id"]
+    naive = datetime.fromisoformat(f"{pending['date']}T{pending['time']}:00")
+    starts_at = naive.replace(tzinfo=_clinic_tz())
+    ends_at = starts_at + timedelta(minutes=DEFAULT_DURATION_MIN[appt_type])
+
+    if provider_id and has_overlap(
+        supabase, provider_id, starts_at.isoformat(), ends_at.isoformat(), exclude_appointment_id=appt_id
+    ):
+        _set_pending(supabase, conversation, {**pending, "step": "time"})
+        wa.send_text(phone, "Sorry — that slot was just taken. Please pick another time:")
+        _send_time_menu(phone)
+        return
+
+    supabase.table("appointments").update(
+        {"starts_at": starts_at.isoformat(), "ends_at": ends_at.isoformat(), "status": "scheduled"}
+    ).eq("id", appt_id).execute()
+    _set_pending(supabase, conversation, None)
+    log_event(supabase, conversation["id"], "message_in", metadata={"rescheduled_appointment_id": appt_id})
 
     label = APPOINTMENT_TYPE_LABELS[appt_type]
     wa.send_text(
         phone,
-        f"You're booked! ✅\n\n{label} on {starts_at.strftime('%A, %d %B')} at "
-        f"{starts_at.strftime('%I:%M %p').lstrip('0')}.\n\n"
-        "Our front office will confirm shortly. Reply MENU any time to start over.",
+        f"Done — your {label} is now on {starts_at.strftime('%A, %d %B')} at "
+        f"{starts_at.strftime('%I:%M %p').lstrip('0')}. Reply MENU any time.",
     )
 
 
@@ -232,12 +348,135 @@ def _handle_interactive_reply(supabase, conversation: dict, phone: str, reply_id
 
     if reply_id.startswith("book_time_"):
         time_str = reply_id.removeprefix("book_time_")
-        pending = {**(conversation.get("pending_booking") or {}), "time": time_str, "step": "name"}
+        pending = {**(conversation.get("pending_booking") or {}), "time": time_str}
+
+        if pending.get("reschedule_appointment_id"):
+            _set_pending(supabase, conversation, pending)
+            _attempt_reschedule(supabase, conversation, phone)
+            return
+
+        if pending.get("name"):
+            # Retry after a slot-conflict bounce — we already have the name
+            # (and any family-mismatch flag) from before, skip re-asking.
+            _set_pending(supabase, conversation, pending)
+            _attempt_booking(
+                supabase, conversation, phone, pending["name"], wa_message_id, pending.get("family_mismatch", False)
+            )
+            return
+
+        existing_name = _existing_patient_name(supabase, phone)
+        if existing_name:
+            pending["step"] = "confirm_name"
+            pending["candidate_name"] = existing_name
+            _set_pending(supabase, conversation, pending)
+            wa.send_text(
+                phone,
+                f"Is this appointment for {existing_name}? Reply YES, or send the patient's full name if "
+                "it's for someone else.",
+            )
+        else:
+            pending["step"] = "name"
+            _set_pending(supabase, conversation, pending)
+            wa.send_text(phone, "Great — what's the patient's full name?")
+        return
+
+    if reply_id.startswith("appt_"):
+        appt_id = reply_id.removeprefix("appt_")
+        wa.send_button_list(
+            phone,
+            "What would you like to do with this appointment?",
+            [
+                (f"apptcancel_{appt_id}", "Cancel"),
+                (f"apptreschedule_{appt_id}", "Reschedule"),
+                (f"apptkeep_{appt_id}", "Never mind"),
+            ],
+        )
+        return
+
+    if reply_id.startswith("apptcancel_"):
+        appt_id = reply_id.removeprefix("apptcancel_")
+        supabase.table("appointments").update({"status": "cancelled"}).eq("id", appt_id).execute()
+        log_event(supabase, conversation["id"], "message_in", metadata={"cancelled_appointment_id": appt_id})
+        wa.send_text(phone, "Done — that appointment has been cancelled. Type MENU any time to book another.")
+        return
+
+    if reply_id.startswith("apptreschedule_"):
+        appt_id = reply_id.removeprefix("apptreschedule_")
+        appt = (
+            supabase.table("appointments")
+            .select("id, appointment_type, provider_id")
+            .eq("id", appt_id)
+            .maybe_single()
+            .execute()
+        )
+        if not appt.data:
+            wa.send_text(phone, "Sorry, I couldn't find that appointment anymore.")
+            return
+        pending = {
+            "step": "date",
+            "type": appt.data["appointment_type"],
+            "provider_id": appt.data["provider_id"] or "any",
+            "reschedule_appointment_id": appt_id,
+        }
         _set_pending(supabase, conversation, pending)
-        wa.send_text(phone, "Great — what's the patient's full name?")
+        wa.send_text(phone, "Sure — let's pick a new day and time.")
+        _send_date_menu(phone)
+        return
+
+    if reply_id.startswith("apptkeep_"):
+        wa.send_text(phone, "No changes made. Type MENU any time.")
         return
 
     logger.warning("Unrecognized interactive reply id: %s", reply_id)
+
+
+def _check_ai_rate_limit(supabase, conversation: dict) -> bool:
+    """
+    Bounds OpenRouter spend/abuse per contact: at most
+    settings.ai_max_calls_per_window free-text AI replies per
+    ai_rate_window_hours, per phone number. Returns True if this call is
+    allowed (and records it); False if the contact is over the limit.
+    """
+    settings = get_settings()
+    now = datetime.now(ZoneInfo("UTC"))
+    window_started_raw = conversation.get("ai_call_window_started_at")
+    count = conversation.get("ai_call_count") or 0
+
+    window_started = None
+    if window_started_raw:
+        try:
+            window_started = datetime.fromisoformat(window_started_raw)
+        except ValueError:
+            window_started = None
+
+    if not window_started or (now - window_started) > timedelta(hours=settings.ai_rate_window_hours):
+        window_started = now
+        count = 0
+
+    if count >= settings.ai_max_calls_per_window:
+        return False
+
+    supabase.table("whatsapp_conversations").update(
+        {"ai_call_window_started_at": window_started.isoformat(), "ai_call_count": count + 1}
+    ).eq("id", conversation["id"]).execute()
+    conversation["ai_call_window_started_at"] = window_started.isoformat()
+    conversation["ai_call_count"] = count + 1
+    return True
+
+
+def _raise_staff_alert(supabase, conversation: dict, phone: str, excerpt: str):
+    try:
+        supabase.table("staff_alerts").insert(
+            {
+                "alert_type": "needs_human",
+                "conversation_id": conversation["id"],
+                "phone": phone,
+                "message_excerpt": excerpt[:500],
+            }
+        ).execute()
+    except Exception:
+        logger.exception("Failed to record staff_alerts row for conversation %s", conversation["id"])
+    alerting.send_emergency_email(phone, excerpt[:500])
 
 
 def handle_inbound_message(
@@ -294,10 +533,21 @@ def handle_inbound_message(
         _send_type_menu(phone)
         return
 
-    # --- mid-booking free-text steps (currently just: collecting the name) ---
+    if lowered in MY_APPOINTMENTS_WORDS:
+        _send_my_appointments_menu(supabase, conversation, phone)
+        return
+
+    # --- mid-booking free-text steps ---
     pending = conversation.get("pending_booking")
+    if pending and pending.get("step") == "confirm_name":
+        candidate = pending.get("candidate_name", "")
+        if lowered in _CONFIRM_WORDS:
+            _attempt_booking(supabase, conversation, phone, candidate, wa_message_id, family_mismatch=False)
+        else:
+            _attempt_booking(supabase, conversation, phone, body_text, wa_message_id, family_mismatch=True)
+        return
     if pending and pending.get("step") == "name":
-        _complete_booking(supabase, conversation, phone, body_text, wa_message_id)
+        _attempt_booking(supabase, conversation, phone, body_text, wa_message_id, family_mismatch=False)
         return
 
     # --- first-ever message: send the welcome + opt-in prompt, nothing else yet ---
@@ -308,6 +558,15 @@ def handle_inbound_message(
         return
 
     # --- otherwise: hand off to the AI for a free-text reply + stage judgment ---
+    if not _check_ai_rate_limit(supabase, conversation):
+        log_event(supabase, conversation["id"], "message_in", metadata={"ai_rate_limited": True})
+        wa.send_text(
+            phone,
+            "You've sent quite a few messages recently, so let's use the quick menu instead — type MENU to "
+            "book an appointment, or call the clinic directly for anything urgent.",
+        )
+        return
+
     history = (
         supabase.table("whatsapp_messages")
         .select("direction, body")
@@ -319,12 +578,12 @@ def handle_inbound_message(
     )
     history.reverse()
     recent_messages = [
-        {"role": "assistant" if m["direction"] == "outbound" else "user", "content": m["body"] or ""}
+        {"role": "assistant" if m["direction"] == "outbound" else "user", "content": (m["body"] or "")[:800]}
         for m in history
         if m["body"]
     ]
 
-    result = get_reply(conversation["funnel_stage"], recent_messages, body_text)
+    result = get_reply(conversation["funnel_stage"], recent_messages, body_text[:_AI_MESSAGE_CHAR_LIMIT])
     wa.send_text(phone, result["reply"])
     supabase.table("whatsapp_messages").insert(
         {
@@ -343,5 +602,6 @@ def handle_inbound_message(
 
     if result["needs_human"]:
         log_event(supabase, conversation["id"], "message_in", metadata={"needs_human": True})
+        _raise_staff_alert(supabase, conversation, phone, body_text)
     elif result["should_offer_booking"]:
         _send_type_menu(phone)
