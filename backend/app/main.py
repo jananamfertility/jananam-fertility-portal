@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import StaffUser, get_current_staff
 from .config import get_settings
-from .routers import appointments, patients, providers, reports, staff, webhooks
+from .routers import appointments, marketing, patients, providers, reports, staff, webhooks
 
 settings = get_settings()
 
@@ -33,6 +33,7 @@ app.include_router(appointments.router)
 app.include_router(webhooks.router)
 app.include_router(staff.router)
 app.include_router(reports.router)
+app.include_router(marketing.router)
 
 
 @app.get("/api/health", tags=["health"])

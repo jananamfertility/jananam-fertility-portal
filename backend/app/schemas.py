@@ -30,6 +30,26 @@ class StaffRole(str, Enum):
     admin = "admin"
 
 
+class FunnelStage(str, Enum):
+    awareness = "awareness"
+    interest = "interest"
+    desire = "desire"
+    action = "action"
+    booked = "booked"
+
+
+class TemplateStatus(str, Enum):
+    draft = "draft"
+    submitted = "submitted"
+    approved = "approved"
+    rejected = "rejected"
+
+
+class TemplateCategory(str, Enum):
+    marketing = "marketing"
+    utility = "utility"
+
+
 # ---------------------------------------------------------------------------
 # Providers
 # ---------------------------------------------------------------------------
@@ -169,3 +189,76 @@ class ReportSummary(BaseModel):
     by_provider: dict[str, int]  # provider name -> count (cancelled excluded)
     no_show_rate: float  # no_show / kept
     cancellation_rate: float  # cancelled / total
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp bot / AIDA funnel marketing (admin panel)
+# ---------------------------------------------------------------------------
+class WhatsAppConversationOut(BaseModel):
+    id: str
+    phone: str
+    display_name: Optional[str] = None
+    patient_id: Optional[str] = None
+    funnel_stage: FunnelStage
+    opted_in: bool
+    opted_in_at: Optional[datetime] = None
+    last_inbound_at: Optional[datetime] = None
+    last_outbound_at: Optional[datetime] = None
+    created_at: datetime
+
+    # Denormalized so the table doesn't need a second lookup.
+    patient: Optional[PatientOut] = None
+
+
+class FunnelSummary(BaseModel):
+    range_start: datetime
+    range_end: datetime
+    total_contacts: int
+    current_by_stage: dict[str, int]        # snapshot: current stage of every contact
+    ever_reached_by_stage: dict[str, int]   # funnel: how many contacts ever reached each stage
+    opted_in: int
+    opted_in_rate: float
+    bookings_from_whatsapp: int
+    messages_in_range: int
+
+
+class TemplateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9_]+$")
+    category: TemplateCategory = TemplateCategory.marketing
+    body: str = Field(min_length=1, max_length=1024)
+    variables: list[str] = Field(default_factory=list)
+    target_stage: Optional[FunnelStage] = None
+
+
+class TemplateUpdate(BaseModel):
+    body: Optional[str] = None
+    variables: Optional[list[str]] = None
+    target_stage: Optional[FunnelStage] = None
+    status: Optional[TemplateStatus] = None
+    meta_template_name: Optional[str] = None
+
+
+class TemplateOut(BaseModel):
+    id: str
+    name: str
+    category: TemplateCategory
+    body: str
+    variables: list[str]
+    target_stage: Optional[FunnelStage] = None
+    status: TemplateStatus
+    meta_template_name: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class RetargetRequest(BaseModel):
+    template_id: str
+    target_stage: FunnelStage
+    inactive_days: int = Field(default=3, ge=0, le=365, description="Only contacts inactive at least this many days")
+
+
+class RetargetResult(BaseModel):
+    matched: int
+    sent: int
+    skipped_not_opted_in: int
+    failed: int

@@ -1,20 +1,8 @@
 """
-Phase 2 — WhatsApp Cloud API webhook.
-
-This is intentionally built and wired in NOW, even though the clinic is
-starting with manual booking only, so switching on WhatsApp later is a
-config change (env vars + turning on auto-booking logic) rather than a
-re-architecture. Today it:
-
-  1. Answers Meta's webhook verification handshake (GET).
-  2. Accepts inbound message/status payloads (POST), verifies the request
-     really came from Meta using the app secret, and logs every event into
-     `whatsapp_messages` — matching to an existing patient by phone number
-     when there is one.
-
-What it deliberately does NOT do yet: parse free-text messages into a
-booking, or send messages back. That's the phase-2 build-out — see the
-TODO block below for exactly where that logic plugs in.
+Phase 2 — WhatsApp Cloud API webhook. Live: inbound messages are answered
+by the guided booking menu / AI bot in `app.bot_flow`, and bookings made
+here land in the same `appointments` table the portal reads, with
+source="whatsapp".
 """
 import hashlib
 import hmac
@@ -22,6 +10,7 @@ import logging
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 
+from ..bot_flow import get_or_create_conversation, handle_inbound_message
 from ..config import get_settings
 from ..database import get_supabase
 
@@ -47,7 +36,7 @@ def verify_webhook(
 
 def _verify_signature(body: bytes, signature_header: str | None, app_secret: str) -> bool:
     if not app_secret:
-        # Phase 2 not configured yet — reject rather than silently trusting
+        # Not configured yet — reject rather than silently trusting
         # unauthenticated input once this endpoint is public.
         return False
     if not signature_header or not signature_header.startswith("sha256="):
@@ -77,49 +66,54 @@ async def receive_webhook(
         for change in entry.get("changes", []):
             value = change.get("value", {})
 
+            # Delivery/read status updates for messages we sent — just log,
+            # nothing to act on yet.
+            for wa_status in value.get("statuses", []):
+                logger.info("WhatsApp status update: %s", wa_status)
+
+            contacts = value.get("contacts", [])
+            profile_name = None
+            if contacts:
+                profile_name = (contacts[0].get("profile") or {}).get("name")
+
             for message in value.get("messages", []):
                 from_phone = message.get("from", "")
-                body_text = (message.get("text") or {}).get("body")
+                to_phone = value.get("metadata", {}).get("display_phone_number", "")
                 wa_message_id = message.get("id")
+                body_text = (message.get("text") or {}).get("body")
 
-                patient = (
-                    supabase.table("patients")
-                    .select("id")
-                    .eq("phone", from_phone)
-                    .maybe_single()
-                    .execute()
-                )
+                try:
+                    conversation = get_or_create_conversation(supabase, from_phone, profile_name)
 
-                supabase.table("whatsapp_messages").insert(
-                    {
-                        "wa_message_id": wa_message_id,
-                        "direction": "inbound",
-                        "from_phone": from_phone,
-                        "to_phone": value.get("metadata", {}).get("display_phone_number", ""),
-                        "body": body_text,
-                        "raw_payload": message,
-                        "patient_id": patient.data["id"] if patient.data else None,
-                    }
-                ).execute()
+                    patient = (
+                        supabase.table("patients")
+                        .select("id")
+                        .eq("phone", from_phone)
+                        .maybe_single()
+                        .execute()
+                    )
 
-                # ------------------------------------------------------------------
-                # TODO (phase 2 activation): turn logged messages into bookings.
-                #
-                #   1. If `patient.data` is None, this is a new patient — either
-                #      create a `patients` row from their WhatsApp profile name
-                #      (value["contacts"][0]["profile"]["name"]) or reply asking
-                #      for their name.
-                #   2. Parse `body_text` (or drive a structured reply-button /
-                #      list-message flow) to get appointment type + preferred
-                #      date/time.
-                #   3. Reuse `AppointmentCreate` + the same logic as
-                #      `routers.appointments.create_appointment`, but with
-                #      source="whatsapp" and whatsapp_message_id=wa_message_id.
-                #   4. Send a confirmation back via the Cloud API's /messages
-                #      endpoint (needs a permanent access token + phone_number_id,
-                #      add WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID to
-                #      config.py when this is built).
-                # ------------------------------------------------------------------
-                logger.info("Logged inbound WhatsApp message %s from %s", wa_message_id, from_phone)
+                    supabase.table("whatsapp_messages").insert(
+                        {
+                            "wa_message_id": wa_message_id,
+                            "direction": "inbound",
+                            "from_phone": from_phone,
+                            "to_phone": to_phone,
+                            "body": body_text,
+                            "raw_payload": message,
+                            "patient_id": patient.data["id"] if patient.data else None,
+                            "conversation_id": conversation["id"],
+                        }
+                    ).execute()
+
+                    handle_inbound_message(supabase, conversation, from_phone, message, profile_name)
+                    logger.info("Handled inbound WhatsApp message %s from %s", wa_message_id, from_phone)
+                except Exception:
+                    # A bug in the bot must never take down the webhook (Meta
+                    # disables webhooks that error repeatedly) — the message
+                    # is already logged above either way.
+                    logger.exception(
+                        "Error handling inbound WhatsApp message %s from %s", wa_message_id, from_phone
+                    )
 
     return {"status": "received"}

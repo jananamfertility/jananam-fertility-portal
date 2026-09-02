@@ -1,0 +1,46 @@
+<!--
+  Jananam Fertility Centre — WhatsApp chat button
+  =================================================
+  Paste this whole snippet into an "Embed HTML" / "Custom Code" block on
+  your website (Wix: Add > Embed Code > Embed HTML. WordPress: a Custom
+  HTML block, or your theme's "footer code" setting. Shopify: Online Store
+  > Themes > Edit code > theme.liquid, just before </body>).
+
+  BEFORE PASTING — change the one line below marked "CHANGE THIS":
+  replace 91XXXXXXXXXX with your clinic's WhatsApp number in international
+  format, digits only, no +, no spaces (e.g. 919812345678 for a
+  +91 98123 45678 number).
+
+  This is a plain "click to chat" link (wa.me) — it opens WhatsApp with a
+  pre-filled greeting. It does not need any account setup to work; the bot
+  only needs to be connected on the clinic's side (already handled).
+-->
+<a
+  id="jananam-wa-button"
+  href="https://wa.me/91XXXXXXXXXX?text=Hi%2C%20I%27d%20like%20to%20know%20more%20about%20Jananam%20Fertility%20Centre"
+  target="_blank"
+  rel="noopener"
+  aria-label="Chat with Jananam Fertility Centre on WhatsApp"
+  style="
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 999999;
+    width: 58px;
+    height: 58px;
+    border-radius: 50%;
+    background: #25D366;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    text-decoration: none;
+  "
+  onmouseover="this.style.transform='scale(1.08)'; this.style.boxShadow='0 6px 18px rgba(0,0,0,0.3)';"
+  onmouseout="this.style.transform='scale(1)'; this.style.boxShadow='0 4px 14px rgba(0,0,0,0.25)';"
+>
+  <svg viewBox="0 0 32 32" width="30" height="30" fill="white" aria-hidden="true">
+    <path d="M16.001 3C9.373 3 4 8.373 4 15c0 2.386.696 4.611 1.897 6.48L4 29l7.72-1.86A11.94 11.94 0 0 0 16.001 27C22.629 27 28 21.627 28 15S22.629 3 16.001 3Zm0 21.818c-1.99 0-3.86-.56-5.445-1.53l-.39-.232-4.583 1.104 1.14-4.472-.255-.406A9.77 9.77 0 0 1 5.182 15c0-5.964 4.855-10.818 10.819-10.818S26.818 9.036 26.818 15 21.965 24.818 16.001 24.818Zm5.977-7.98c-.328-.164-1.94-.957-2.24-1.066-.3-.11-.518-.164-.737.164-.219.328-.846 1.066-1.037 1.285-.191.219-.383.246-.71.082-.328-.164-1.386-.51-2.64-1.63-.976-.87-1.635-1.945-1.826-2.273-.191-.328-.02-.505.144-.669.148-.147.328-.383.492-.574.164-.191.219-.328.328-.547.11-.219.055-.41-.027-.574-.082-.164-.737-1.777-1.01-2.434-.266-.64-.537-.553-.737-.564l-.628-.011a1.2 1.2 0 0 0-.874.41c-.3.328-1.147 1.121-1.147 2.734s1.174 3.172 1.338 3.39c.164.219 2.31 3.527 5.598 4.945.782.338 1.393.54 1.869.69.785.25 1.499.215 2.064.13.63-.094 1.94-.793 2.213-1.559.273-.766.273-1.422.191-1.559-.082-.137-.3-.219-.628-.383Z"/>
+  </svg>
+</a>

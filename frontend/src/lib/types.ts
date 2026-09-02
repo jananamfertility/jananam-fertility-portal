@@ -98,6 +98,73 @@ export interface StaffCreateInput {
   role: StaffRole;
 }
 
+export type FunnelStage = "awareness" | "interest" | "desire" | "action" | "booked";
+
+export const FUNNEL_STAGE_LABELS: Record<FunnelStage, string> = {
+  awareness: "Awareness",
+  interest: "Interest",
+  desire: "Desire",
+  action: "Action",
+  booked: "Booked",
+};
+
+export type TemplateStatus = "draft" | "submitted" | "approved" | "rejected";
+export type TemplateCategory = "marketing" | "utility";
+
+export interface WhatsAppConversation {
+  id: string;
+  phone: string;
+  display_name?: string | null;
+  patient_id?: string | null;
+  funnel_stage: FunnelStage;
+  opted_in: boolean;
+  opted_in_at?: string | null;
+  last_inbound_at?: string | null;
+  last_outbound_at?: string | null;
+  created_at: string;
+  patient?: Patient | null;
+}
+
+export interface FunnelSummary {
+  range_start: string;
+  range_end: string;
+  total_contacts: number;
+  current_by_stage: Record<string, number>;
+  ever_reached_by_stage: Record<string, number>;
+  opted_in: number;
+  opted_in_rate: number;
+  bookings_from_whatsapp: number;
+  messages_in_range: number;
+}
+
+export interface MessageTemplate {
+  id: string;
+  name: string;
+  category: TemplateCategory;
+  body: string;
+  variables: string[];
+  target_stage?: FunnelStage | null;
+  status: TemplateStatus;
+  meta_template_name?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TemplateInput {
+  name: string;
+  category: TemplateCategory;
+  body: string;
+  variables: string[];
+  target_stage?: FunnelStage | null;
+}
+
+export interface RetargetResult {
+  matched: number;
+  sent: number;
+  skipped_not_opted_in: number;
+  failed: number;
+}
+
 export interface ReportSummary {
   range_start: string;
   range_end: string;

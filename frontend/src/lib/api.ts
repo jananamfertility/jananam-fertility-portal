@@ -3,13 +3,18 @@ import { supabase } from "./supabaseClient";
 import type {
   Appointment,
   AppointmentInput,
+  FunnelSummary,
+  MessageTemplate,
   Patient,
   PatientInput,
   Provider,
   ReportSummary,
+  RetargetResult,
   StaffAccount,
   StaffCreateInput,
   StaffProfile,
+  TemplateInput,
+  WhatsAppConversation,
 } from "./types";
 
 const baseURL = import.meta.env.VITE_API_BASE_URL as string;
@@ -118,5 +123,48 @@ export async function fetchReportSummary(params: {
   end: string;
 }): Promise<ReportSummary> {
   const { data } = await api.get<ReportSummary>("/api/reports/summary", { params });
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Marketing (WhatsApp bot / AIDA funnel) — admin panel
+// ---------------------------------------------------------------------------
+export async function fetchFunnelSummary(params: { start: string; end: string }): Promise<FunnelSummary> {
+  const { data } = await api.get<FunnelSummary>("/api/marketing/funnel-summary", { params });
+  return data;
+}
+
+export async function fetchConversations(params?: {
+  stage?: string;
+  opted_in?: boolean;
+}): Promise<WhatsAppConversation[]> {
+  const { data } = await api.get<WhatsAppConversation[]>("/api/marketing/conversations", { params });
+  return data;
+}
+
+export async function fetchTemplates(): Promise<MessageTemplate[]> {
+  const { data } = await api.get<MessageTemplate[]>("/api/marketing/templates");
+  return data;
+}
+
+export async function createTemplate(payload: TemplateInput): Promise<MessageTemplate> {
+  const { data } = await api.post<MessageTemplate>("/api/marketing/templates", payload);
+  return data;
+}
+
+export async function updateTemplate(
+  id: string,
+  payload: Partial<Pick<MessageTemplate, "body" | "variables" | "target_stage" | "status" | "meta_template_name">>
+): Promise<MessageTemplate> {
+  const { data } = await api.patch<MessageTemplate>(`/api/marketing/templates/${id}`, payload);
+  return data;
+}
+
+export async function sendRetargetCampaign(payload: {
+  template_id: string;
+  target_stage: string;
+  inactive_days: number;
+}): Promise<RetargetResult> {
+  const { data } = await api.post<RetargetResult>("/api/marketing/retarget", payload);
   return data;
 }
