@@ -163,6 +163,16 @@ def get_reply(current_stage: str, recent_messages: list[dict], latest_message: s
         resp.raise_for_status()
         data = resp.json()
         raw = data["choices"][0]["message"]["content"]
+        if raw:
+            # Some providers OpenRouter routes to (Bedrock-hosted Claude in
+            # particular) don't honor response_format=json_object strictly
+            # and wrap the JSON in a markdown code fence anyway — strip it
+            # so json.loads() below sees plain JSON either way.
+            fenced = raw.strip()
+            if fenced.startswith("```"):
+                fenced = fenced.removeprefix("```json").removeprefix("```")
+                fenced = fenced.removesuffix("```").strip()
+                raw = fenced
         if not raw:
             # Some OpenRouter-routed models return an empty content string
             # instead of an error when they refuse structured JSON output,
