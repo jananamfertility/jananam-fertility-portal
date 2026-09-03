@@ -143,6 +143,7 @@ def get_reply(current_stage: str, recent_messages: list[dict], latest_message: s
     messages.extend(recent_messages[-8:])
     messages.append({"role": "user", "content": latest_message})
 
+    resp = None
     try:
         resp = httpx.post(
             OPENROUTER_URL,
@@ -160,7 +161,19 @@ def get_reply(current_stage: str, recent_messages: list[dict], latest_message: s
             timeout=30.0,
         )
         resp.raise_for_status()
-        raw = resp.json()["choices"][0]["message"]["content"]
+        data = resp.json()
+        raw = data["choices"][0]["message"]["content"]
+        if not raw:
+            # Some OpenRouter-routed models return an empty content string
+            # instead of an error when they refuse structured JSON output,
+            # or truncate to nothing under max_tokens — log the full
+            # response so this is diagnosable instead of a silent fallback.
+            logger.error(
+                "AI bot got empty content from OpenRouter. finish_reason=%s full_response=%s",
+                data["choices"][0].get("finish_reason"),
+                data,
+            )
+            raise ValueError("empty content from model")
         parsed = json.loads(raw)
         suggested = clamp_forward(current_stage, parsed.get("suggested_stage", current_stage))
         return {
@@ -170,7 +183,17 @@ def get_reply(current_stage: str, recent_messages: list[dict], latest_message: s
             "needs_human": bool(parsed.get("needs_human", False)),
         }
     except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError) as exc:
-        logger.error("AI bot call failed, falling back: %s", exc)
+        body_preview = None
+        try:
+            body_preview = resp.text[:500]
+        except Exception:
+            pass
+        logger.error(
+            "AI bot call failed, falling back: %s | status=%s body=%s",
+            exc,
+            getattr(resp, "status_code", None),
+            body_preview,
+        )
         return {
             "reply": _FALLBACK_REPLY,
             "suggested_stage": current_stage,
