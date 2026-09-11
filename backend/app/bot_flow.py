@@ -47,6 +47,14 @@ MY_APPOINTMENTS_WORDS = {
     "my booking", "view appointments", "upcoming appointments",
 }
 _CONFIRM_WORDS = {"yes", "y", "yeah", "yep", "correct", "that's me", "thats me", "right"}
+# A plain greeting from a returning, already-opted-in contact would otherwise
+# fall straight through to the AI (see handle_inbound_message) and get a
+# conversational reply with no tappable menu at all -- most people open with
+# "Hi", not the literal word "menu", so treat these the same as RESTART_WORDS.
+GREETING_WORDS = {
+    "hi", "hii", "hiii", "hello", "helo", "hey", "heya", "hiya", "yo", "hai",
+    "good morning", "good afternoon", "good evening", "gm",
+}
 
 WELCOME_TEXT = (
     "Hi! 👋 Welcome to Jananam Fertility Centre. I can answer general questions about our "
@@ -647,6 +655,11 @@ def handle_inbound_message(
     # None here reliably means "this contact has never messaged before".)
     if conversation.get("last_inbound_at") is None:
         wa.send_text(phone, WELCOME_TEXT)
+        return
+
+    # --- plain greetings get the tappable main menu directly, not AI chatter ---
+    if lowered in GREETING_WORDS:
+        _send_main_menu(phone)
         return
 
     # --- otherwise: hand off to the AI for a free-text reply + stage judgment ---
