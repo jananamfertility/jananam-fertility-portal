@@ -55,6 +55,36 @@ WELCOME_TEXT = (
     "updates here on WhatsApp. You can reply STOP at any time to opt out."
 )
 
+# Static, staff-reviewed copy for the top-of-funnel main menu taps — deliberately
+# NOT AI-generated, so what a prospective patient reads about treatments, the
+# clinic, and costs is accurate and consistent every time, with no model-call
+# latency/cost or hallucination risk. Facts sourced from jananamfertility.com;
+# review these if the site's claims ever change.
+_TREATMENTS_INFO_TEXT = (
+    "We offer a full range of fertility treatments: IVF, IUI, ICSI/PICSI, donor egg IVF, "
+    "fertility preservation (egg, embryo, and sperm freezing), and NT scans — all through our "
+    "own on-site, ART-certified embryology lab.\n\n"
+    "Every treatment plan is personalised after a proper evaluation with the doctor — there's "
+    "no one-size-fits-all approach here.\n\n"
+    "Reply MENU to see more, or ask me anything about a specific treatment."
+)
+_ABOUT_CLINIC_INFO_TEXT = (
+    "Jananam Fertility Centre has been serving patients in Neelankarai, Chennai since 2013, led "
+    "by Dr. Vani Sundarapandian (MD, DGO, MRCOG-UK), who brings 25+ years of experience in "
+    "reproductive medicine.\n\n"
+    "We're a single-specialty fertility clinic — this is the only thing we focus on, not one "
+    "department among many.\n\n"
+    "Reply MENU to see more, or ask me anything."
+)
+_COSTS_INFO_TEXT = (
+    "We believe in transparency: your treatment plan and its costs are discussed clearly with "
+    "you before anything begins, with no hidden charges or surprise add-ons.\n\n"
+    "A first consultation lets the doctor understand your situation and give you an accurate, "
+    "personalised cost estimate — every case is different, so we don't quote prices blind over "
+    "WhatsApp.\n\n"
+    "Reply MENU to see more, or BOOK to schedule a consultation."
+)
+
 _STAGE_ORDER = ["awareness", "interest", "desire", "action", "booked"]
 
 # Free-text messages longer than this are truncated before being sent to the
@@ -121,6 +151,29 @@ def _set_pending(supabase, conversation: dict, pending: dict | None):
         "id", conversation["id"]
     ).execute()
     conversation["pending_booking"] = pending
+
+
+def _send_main_menu(phone: str):
+    """
+    Top-of-funnel menu shown right after opt-in and whenever someone types
+    MENU — gives Awareness/Interest/Desire-stage contacts something to tap
+    besides "book now", instead of assuming everyone who messages is
+    already ready to book (see _send_type_menu for that Action-stage menu).
+    """
+    wa.send_list_menu(
+        phone,
+        "How can I help you today?",
+        "Menu",
+        "Jananam Fertility Centre",
+        [
+            ("menu_learn_treatments", "Learn about treatments", "IVF, IUI, fertility scans & more"),
+            ("menu_about_clinic", "About our clinic", "Our doctor, experience & approach"),
+            ("menu_cost_expect", "Costs & what to expect", "Transparent pricing, first visit info"),
+            ("menu_book", "Book an appointment", "Consultation, follow-up or NT scan"),
+            ("menu_my_appts", "My appointments", "View, reschedule or cancel"),
+            ("menu_talk_human", "Talk to our team", "Connect with front office"),
+        ],
+    )
 
 
 def _send_type_menu(phone: str):
@@ -327,6 +380,45 @@ def _attempt_reschedule(supabase, conversation: dict, phone: str):
 
 
 def _handle_interactive_reply(supabase, conversation: dict, phone: str, reply_id: str, wa_message_id: str):
+    # --- main menu taps (see _send_main_menu) — each maps to one AIDA stage ---
+    if reply_id == "menu_learn_treatments":
+        _set_stage(supabase, conversation, "awareness")
+        log_event(supabase, conversation["id"], "message_in", metadata={"menu_tap": "learn_treatments"})
+        wa.send_text(phone, _TREATMENTS_INFO_TEXT)
+        return
+
+    if reply_id == "menu_about_clinic":
+        _set_stage(supabase, conversation, "interest")
+        log_event(supabase, conversation["id"], "message_in", metadata={"menu_tap": "about_clinic"})
+        wa.send_text(phone, _ABOUT_CLINIC_INFO_TEXT)
+        return
+
+    if reply_id == "menu_cost_expect":
+        _set_stage(supabase, conversation, "desire")
+        log_event(supabase, conversation["id"], "message_in", metadata={"menu_tap": "cost_expect"})
+        wa.send_text(phone, _COSTS_INFO_TEXT)
+        return
+
+    if reply_id == "menu_book":
+        _set_stage(supabase, conversation, "action")
+        log_event(supabase, conversation["id"], "message_in", metadata={"menu_tap": "book"})
+        _send_type_menu(phone)
+        return
+
+    if reply_id == "menu_my_appts":
+        _send_my_appointments_menu(supabase, conversation, phone)
+        return
+
+    if reply_id == "menu_talk_human":
+        log_event(supabase, conversation["id"], "message_in", metadata={"menu_tap": "talk_human"})
+        wa.send_text(
+            phone,
+            "Sure — I've let our front office know you'd like to speak with someone. They'll reach "
+            "out here on WhatsApp or call you shortly. Reply MENU any time in the meantime.",
+        )
+        _raise_staff_alert(supabase, conversation, phone, "Contact tapped 'Talk to our team' from the main menu.")
+        return
+
     if reply_id.startswith("book_type_"):
         appt_type = reply_id.removeprefix("book_type_")
         _set_pending(supabase, conversation, {"step": "provider", "type": appt_type})
@@ -524,16 +616,13 @@ def handle_inbound_message(
             {"opted_in": True, "opted_in_at": _now_iso()}
         ).eq("id", conversation["id"]).execute()
         log_event(supabase, conversation["id"], "opted_in")
-        wa.send_text(
-            phone,
-            "Thanks! You're all set. Ask me anything about our services, or type MENU to book "
-            "an appointment.",
-        )
+        wa.send_text(phone, "Thanks! You're all set.")
+        _send_main_menu(phone)
         return
 
     if lowered in RESTART_WORDS:
         _set_pending(supabase, conversation, None)
-        _send_type_menu(phone)
+        _send_main_menu(phone)
         return
 
     if lowered in MY_APPOINTMENTS_WORDS:
