@@ -708,6 +708,10 @@ def handle_inbound_message(
     if result["needs_human"]:
         log_event(supabase, conversation["id"], "message_in", metadata={"needs_human": True})
         _raise_staff_alert(supabase, conversation, phone, body_text)
+        # Still show the menu after an emergency/human-request flag -- the
+        # AI's own reply already tells them to call/go to hospital for a true
+        # emergency, this just leaves something tappable either way.
+        _send_main_menu(phone)
     elif result["should_offer_booking"]:
         # AI judged this the natural moment to book -- skip the main menu and
         # jump straight to picking a booking type.
