@@ -709,4 +709,10 @@ def handle_inbound_message(
         log_event(supabase, conversation["id"], "message_in", metadata={"needs_human": True})
         _raise_staff_alert(supabase, conversation, phone, body_text)
     elif result["should_offer_booking"]:
+        # AI judged this the natural moment to book -- skip the main menu and
+        # jump straight to picking a booking type.
         _send_type_menu(phone)
+    else:
+        # Whatever they typed, they should always end up with a tappable
+        # menu, not just a wall of AI text with nothing to do next.
+        _send_main_menu(phone)
