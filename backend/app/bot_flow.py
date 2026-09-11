@@ -55,6 +55,14 @@ GREETING_WORDS = {
     "hi", "hii", "hiii", "hello", "helo", "hey", "heya", "hiya", "yo", "hai",
     "good morning", "good afternoon", "good evening", "gm",
 }
+# Words that indicate the person's own message is actually asking to book,
+# not just asking about the clinic in general -- see _has_explicit_booking_intent.
+_BOOKING_INTENT_SUBSTRINGS = ("book", "appointment", "schedule")
+
+
+def _has_explicit_booking_intent(lowered_text: str) -> bool:
+    return any(kw in lowered_text for kw in _BOOKING_INTENT_SUBSTRINGS)
+
 
 WELCOME_TEXT = (
     "Hi! 👋 Welcome to Jananam Fertility Centre. I can answer general questions about our "
@@ -712,9 +720,12 @@ def handle_inbound_message(
         # AI's own reply already tells them to call/go to hospital for a true
         # emergency, this just leaves something tappable either way.
         _send_main_menu(phone)
-    elif result["should_offer_booking"]:
-        # AI judged this the natural moment to book -- skip the main menu and
-        # jump straight to picking a booking type.
+    elif result["should_offer_booking"] and _has_explicit_booking_intent(lowered):
+        # The AI thought this was a good moment AND the person's own message
+        # actually asked to book -- skip the main menu and jump straight to
+        # picking a booking type. should_offer_booking alone was too eager:
+        # plain curiosity like "what is ivf" or "what are your charges" was
+        # tripping it and skipping the main menu every time.
         _send_type_menu(phone)
     else:
         # Whatever they typed, they should always end up with a tappable
