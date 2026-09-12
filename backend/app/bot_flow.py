@@ -154,6 +154,19 @@ _AI_MESSAGE_CHAR_LIMIT = 1500
 # handle_inbound_message.
 _MENU_REMINDER_EVERY = 3
 
+# Friendly labels for WhatsApp message types the bot can't actually read
+# (see the guard in handle_inbound_message) -- keyed by the Cloud API's own
+# `type` field.
+_NON_TEXT_TYPE_LABELS = {
+    "image": "photos",
+    "video": "videos",
+    "audio": "voice notes",
+    "document": "documents",
+    "sticker": "stickers",
+    "location": "locations",
+    "contacts": "contact cards",
+}
+
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat()
@@ -183,6 +196,11 @@ def get_or_create_conversation(supabase, phone: str, display_name: str | None) -
             supabase.table("whatsapp_conversations").update({"display_name": display_name}).eq(
                 "id", existing.data["id"]
             ).execute()
+            # Keep the in-memory dict in sync with what was just written --
+            # otherwise this call's caller sees the pre-update (missing)
+            # display_name for the rest of this request, even though the
+            # row itself now has it.
+            existing.data["display_name"] = display_name
         return existing.data
 
     created = (
@@ -583,7 +601,11 @@ def _handle_interactive_reply(supabase, conversation: dict, phone: str, reply_id
         wa.send_text(phone, "No changes made. Type MENU any time.")
         return
 
+    # An unrecognized tap (a stale button from an old message, a client
+    # quirk, etc.) used to just log a warning and leave the person with
+    # silence after tapping something -- always give them a way back in.
     logger.warning("Unrecognized interactive reply id: %s", reply_id)
+    wa.send_text(phone, "Sorry, that option isn't available anymore. Reply MENU to see your options.")
 
 
 def _check_ai_rate_limit(supabase, conversation: dict) -> bool:
@@ -656,6 +678,19 @@ def handle_inbound_message(
         reply = interactive.get("button_reply") or interactive.get("list_reply")
         if reply:
             _handle_interactive_reply(supabase, conversation, phone, reply["id"], wa_message_id)
+        return
+
+    # --- anything that isn't plain text or a menu tap (photo, voice note,
+    # document, location, etc.) used to get silently dropped -- no reply at
+    # all, which reads as the bot simply not working. Acknowledge it and
+    # point back to something it can actually act on. ---
+    if msg_type and msg_type != "text":
+        label = _NON_TEXT_TYPE_LABELS.get(msg_type, "that")
+        wa.send_text(
+            phone,
+            f"I'm not able to look at {label} yet, sorry! Could you type what you need instead, or "
+            "reply MENU to see your options?",
+        )
         return
 
     body_text = (message.get("text") or {}).get("body", "").strip()
