@@ -171,15 +171,28 @@ fresh look at what's still missing for "personalized and intuitive."
 
 ### Open -- for "more personalized and intuitive," needs your call
 
-- [ ] **No appointment reminders, despite promising them.** The very
-  opt-in message a patient agrees to says "reply YES to allow us to send
-  appointment reminders" -- nothing in the codebase actually sends one.
-  There's no scheduled/cron infrastructure at all yet. This is the single
-  biggest gap between what the bot claims and what it does. Needs: a
-  scheduled job (e.g. a Render Cron Job) that finds appointments starting
-  in the next N hours and messages the patient, plus (since reminders are
-  typically sent outside the 24-hour free-form window) an approved Meta
-  message template rather than plain text.
+- [~] **No appointment reminders, despite promising them.** Built, not
+  yet live -- three manual steps stand between this and actually working:
+  1. Submit the template in Meta Business Manager: name
+     `appointment_reminder_24h`, category **Utility**, body exactly:
+     `Hi {{1}}, this is a reminder from Jananam Fertility Centre about
+     your {{2}} appointment on {{3}} at {{4}}. Reply here if you need to
+     reschedule or have questions.` Wait for Meta's approval (hours to a
+     couple of days, typically).
+  2. Set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+     `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, and
+     `WHATSAPP_BUSINESS_ACCOUNT_ID` on the new **jananam-fertility-reminders**
+     Render Cron Job (same values as the `jananam-fertility-backend`
+     service's Environment tab -- Render doesn't let these be copied
+     programmatically).
+  3. Push this session's commits and trigger the cron job's first deploy.
+
+  Once all three are done: `backend/scripts/send_reminders.py` runs
+  hourly, finds appointments starting in ~24h that haven't been reminded
+  yet, checks the template is genuinely APPROVED with Meta before sending
+  anything (refuses/no-ops otherwise), sends only to opted-in patients,
+  and marks each appointment's `reminder_sent_at` so it's never reminded
+  twice.
 - [ ] **Asha never uses the patient's name.** `display_name` (the WhatsApp
   profile name) is captured but never surfaced in any message -- every
   reply, including the welcome message, is generic. The risk: a WhatsApp
