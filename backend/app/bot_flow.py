@@ -13,6 +13,7 @@ provider-overlap check the portal API uses (see scheduling.has_overlap) so
 neither path can double-book a provider.
 """
 import logging
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -70,6 +71,39 @@ WELCOME_TEXT = (
     "Before we continue: reply YES to allow us to send appointment reminders and occasional "
     "updates here on WhatsApp. You can reply STOP at any time to opt out."
 )
+
+# The website's click-to-chat button pre-fills a message that now varies by
+# page -- e.g. "Hi, I'd like to know more about Egg Freezing" -- so the very
+# first message a contact ever sends is a useful hint about what brought them
+# in. Used only to personalize the welcome text's opening line (falls back to
+# the generic WELCOME_TEXT when it doesn't match) and is also stored as-is on
+# the conversation as source_context, to softly steer the AI's later replies
+# (see ai_bot.get_reply's source_context param).
+_SOURCE_TOPIC_RE = re.compile(r"know more about\s+(.+)", re.IGNORECASE)
+
+
+def _extract_topic(source_text: str | None) -> str | None:
+    if not source_text:
+        return None
+    match = _SOURCE_TOPIC_RE.search(source_text)
+    if not match:
+        return None
+    topic = match.group(1).strip().strip(".!?").strip()
+    if not topic or len(topic) > 60:
+        return None
+    return topic
+
+
+def _welcome_text_for(source_text: str | None) -> str:
+    topic = _extract_topic(source_text)
+    if not topic:
+        return WELCOME_TEXT
+    return (
+        f"Hi! 👋 Welcome to Jananam Fertility Centre. I saw you're interested in {topic} — happy to "
+        "answer questions about it, or help you book a Consultation, Follow-up, or NT Scan.\n\n"
+        "Before we continue: reply YES to allow us to send appointment reminders and occasional "
+        "updates here on WhatsApp. You can reply STOP at any time to opt out."
+    )
 
 # Static, staff-reviewed copy for the top-of-funnel main menu taps — deliberately
 # NOT AI-generated, so what a prospective patient reads about treatments, the
@@ -662,7 +696,12 @@ def handle_inbound_message(
     # (conversation was loaded before this call's last_inbound_at update above, so
     # None here reliably means "this contact has never messaged before".)
     if conversation.get("last_inbound_at") is None:
-        wa.send_text(phone, WELCOME_TEXT)
+        source_context = body_text[:500]
+        supabase.table("whatsapp_conversations").update({"source_context": source_context}).eq(
+            "id", conversation["id"]
+        ).execute()
+        conversation["source_context"] = source_context
+        wa.send_text(phone, _welcome_text_for(body_text))
         return
 
     # --- plain greetings get the tappable main menu directly, not AI chatter ---
@@ -696,7 +735,12 @@ def handle_inbound_message(
         if m["body"]
     ]
 
-    result = get_reply(conversation["funnel_stage"], recent_messages, body_text[:_AI_MESSAGE_CHAR_LIMIT])
+    result = get_reply(
+        conversation["funnel_stage"],
+        recent_messages,
+        body_text[:_AI_MESSAGE_CHAR_LIMIT],
+        conversation.get("source_context"),
+    )
     wa.send_text(phone, result["reply"])
     supabase.table("whatsapp_messages").insert(
         {
