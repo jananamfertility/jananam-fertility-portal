@@ -66,8 +66,9 @@ def _has_explicit_booking_intent(lowered_text: str) -> bool:
 
 
 WELCOME_TEXT = (
-    "Hi! 👋 Welcome to Jananam Fertility Centre. I can answer general questions about our "
-    "services, or help you book a Consultation, Follow-up, or NT Scan.\n\n"
+    "Hi! 👋 I'm Asha, Jananam Fertility Centre's AI care assistant. I'm here to answer your "
+    "questions and help you book a Consultation, Follow-up, or NT Scan — whatever's easiest for "
+    "you.\n\n"
     "Before we continue: reply YES to allow us to send appointment reminders and occasional "
     "updates here on WhatsApp. You can reply STOP at any time to opt out."
 )
@@ -99,8 +100,9 @@ def _welcome_text_for(source_text: str | None) -> str:
     if not topic:
         return WELCOME_TEXT
     return (
-        f"Hi! 👋 Welcome to Jananam Fertility Centre. I saw you're interested in {topic} — happy to "
-        "answer questions about it, or help you book a Consultation, Follow-up, or NT Scan.\n\n"
+        f"Hi! 👋 I'm Asha, Jananam Fertility Centre's AI care assistant. I saw you're interested "
+        f"in {topic} — happy to help with any questions, or book a Consultation, Follow-up, or "
+        "NT Scan whenever you're ready.\n\n"
         "Before we continue: reply YES to allow us to send appointment reminders and occasional "
         "updates here on WhatsApp. You can reply STOP at any time to opt out."
     )
