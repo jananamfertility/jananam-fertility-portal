@@ -10,6 +10,7 @@ import logging
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 
+from .. import whatsapp_client as wa
 from ..bot_flow import get_or_create_conversation, handle_inbound_message
 from ..config import get_settings
 from ..database import get_supabase
@@ -88,6 +89,16 @@ async def receive_webhook(
                 to_phone = value.get("metadata", {}).get("display_phone_number", "")
                 wa_message_id = message.get("id")
                 body_text = (message.get("text") or {}).get("body")
+
+                # Mark read + show "typing..." as early as possible, on its own
+                # so a hiccup here never blocks actually handling the message
+                # -- this is what makes the reply that follows (often a few
+                # seconds away, waiting on the AI call) feel like someone's
+                # actually there instead of dead air.
+                try:
+                    wa.mark_read_with_typing(wa_message_id)
+                except Exception:
+                    logger.exception("Failed to mark message %s as read / show typing indicator", wa_message_id)
 
                 try:
                     conversation = get_or_create_conversation(supabase, from_phone, profile_name)

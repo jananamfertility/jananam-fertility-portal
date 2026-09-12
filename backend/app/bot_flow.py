@@ -145,6 +145,15 @@ _STAGE_ORDER = ["awareness", "interest", "desire", "action", "booked"]
 # message is still stored in whatsapp_messages either way.
 _AI_MESSAGE_CHAR_LIMIT = 1500
 
+# A plain conversational reply no longer drags the tappable main menu along
+# with it every single time (that felt like two robotic messages back to
+# back) -- instead it resurfaces every _MENU_REMINDER_EVERY-th such reply,
+# via the messages_since_menu counter on the conversation. A genuinely
+# meaningful moment (needs_human, or an explicit booking ask) still always
+# shows a menu regardless of this counter -- see the trailing logic in
+# handle_inbound_message.
+_MENU_REMINDER_EVERY = 3
+
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat()
@@ -762,10 +771,13 @@ def handle_inbound_message(
     if result["needs_human"]:
         log_event(supabase, conversation["id"], "message_in", metadata={"needs_human": True})
         _raise_staff_alert(supabase, conversation, phone, body_text)
-        # Still show the menu after an emergency/human-request flag -- the
-        # AI's own reply already tells them to call/go to hospital for a true
-        # emergency, this just leaves something tappable either way.
+        # Still always show the menu after an emergency/human-request flag --
+        # the AI's own reply already tells them to call/go to hospital for a
+        # true emergency, this just leaves something tappable either way.
         _send_main_menu(phone)
+        supabase.table("whatsapp_conversations").update({"messages_since_menu": 0}).eq(
+            "id", conversation["id"]
+        ).execute()
     elif result["should_offer_booking"] and _has_explicit_booking_intent(lowered):
         # The AI thought this was a good moment AND the person's own message
         # actually asked to book -- skip the main menu and jump straight to
@@ -773,7 +785,20 @@ def handle_inbound_message(
         # plain curiosity like "what is ivf" or "what are your charges" was
         # tripping it and skipping the main menu every time.
         _send_type_menu(phone)
+        supabase.table("whatsapp_conversations").update({"messages_since_menu": 0}).eq(
+            "id", conversation["id"]
+        ).execute()
     else:
-        # Whatever they typed, they should always end up with a tappable
-        # menu, not just a wall of AI text with nothing to do next.
-        _send_main_menu(phone)
+        # A plain conversational reply -- don't tack the tappable menu onto
+        # every single one of these (it read as two robotic messages back to
+        # back). Instead resurface it only every _MENU_REMINDER_EVERY-th
+        # such reply, so there's still always a safety net to get back to
+        # the menu without every exchange feeling mechanical.
+        since_menu = (conversation.get("messages_since_menu") or 0) + 1
+        if since_menu >= _MENU_REMINDER_EVERY:
+            _send_main_menu(phone)
+            since_menu = 0
+        supabase.table("whatsapp_conversations").update({"messages_since_menu": since_menu}).eq(
+            "id", conversation["id"]
+        ).execute()
+        conversation["messages_since_menu"] = since_menu

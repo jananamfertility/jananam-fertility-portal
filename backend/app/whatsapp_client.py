@@ -13,7 +13,7 @@ from .config import get_settings
 
 logger = logging.getLogger("whatsapp_client")
 
-GRAPH_API_VERSION = "v20.0"
+GRAPH_API_VERSION = "v26.0"
 
 
 def _configured() -> bool:
@@ -58,6 +58,27 @@ def send_text(to_phone: str, body: str) -> dict | None:
             "to": to_phone,
             "type": "text",
             "text": {"body": body, "preview_url": False},
+        }
+    )
+
+
+def mark_read_with_typing(wa_message_id: str) -> dict | None:
+    """
+    Marks an inbound message as read (blue ticks on the patient's side) and
+    shows a "typing..." indicator at the same time -- the Cloud API's own
+    combined mechanism for this, not a custom effect. The indicator clears
+    itself after ~25 seconds or as soon as we actually send a reply,
+    whichever comes first, so this should be called as early as possible
+    when a message comes in, before the (often few-second) AI call.
+    """
+    if not wa_message_id:
+        return None
+    return _post(
+        {
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": wa_message_id,
+            "typing_indicator": {"type": "text"},
         }
     )
 
