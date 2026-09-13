@@ -59,7 +59,7 @@ _AFFIRMATIVE_WORDS = {
 }
 # A plain greeting from a returning, already-opted-in contact would otherwise
 # fall straight through to the AI (see handle_inbound_message) and get a
-# conversational reply with no tappable menu at all -- most people open with
+# conversational reply with no tappable menu at all — most people open with
 # "Hi", not the literal word "menu", so treat these the same as RESTART_WORDS.
 GREETING_WORDS = {
     "hi", "hii", "hiii", "hello", "helo", "hey", "heya", "hiya", "yo", "hai",
@@ -352,7 +352,7 @@ def _send_main_menu(phone: str):
     """
     wa.send_list_menu(
         phone,
-        "How can I help you today?",
+        "Menu",
         "Menu",
         "Jananam Fertility Centre",
         [
