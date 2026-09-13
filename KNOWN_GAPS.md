@@ -140,16 +140,16 @@ fresh look at what's still missing for "personalized and intuitive."
 
 - [x] **WhatsApp Graph API version was 6 weeks from expiring.** `v20.0`
   (pinned in `whatsapp_client.py`) expires **September 24, 2026** per
-  Meta's 2-year version window -- unrelated to anything asked for, but
+  Meta's 2-year version window — unrelated to anything asked for, but
   would have silently broken every outbound WhatsApp call. Bumped to
   `v26.0`.
 - [x] **No typing indicator / read receipt.** Added
   `whatsapp_client.mark_read_with_typing()`, called as early as possible
-  in the webhook handler -- patients now see blue ticks + "typing..." while
+  in the webhook handler — patients now see blue ticks + "typing..." while
   the AI composes a reply, instead of dead air.
 - [x] **Unrecognized interactive taps went silent.** A stale/expired
   button tap only logged a warning server-side; the patient got no reply
-  at all. Now sends a "that option isn't available -- reply MENU" fallback.
+  at all. Now sends a "that option isn't available — reply MENU" fallback.
 - [x] **Non-text messages (photos, voice notes, documents, location,
   etc.) were silently dropped.** `handle_inbound_message` only ever looked
   at `message.text.body`; anything else fell through to `if not body_text:
@@ -158,8 +158,8 @@ fresh look at what's still missing for "personalized and intuitive."
 - [x] **`get_or_create_conversation` returned a stale dict.** When a
   returning contact's `display_name` was just backfilled from their
   WhatsApp profile, the function updated the row but hadn't updated the
-  in-memory dict it returned -- so that name was invisible to the rest of
-  that request. Harmless today (nothing reads `display_name` yet -- see
+  in-memory dict it returned — so that name was invisible to the rest of
+  that request. Harmless today (nothing reads `display_name` yet — see
   the open item below) but would have silently broken personalization the
   moment something started using it.
 - [x] **Migration history had drifted from the live schema.** `source_context`
@@ -169,10 +169,10 @@ fresh look at what's still missing for "personalized and intuitive."
   fresh/staging database built from migrations alone wouldn't come up
   missing these columns.
 
-### Open -- for "more personalized and intuitive," needs your call
+### Open — for "more personalized and intuitive," needs your call
 
 - [~] **No appointment reminders, despite promising them.** Built, not
-  yet live -- three manual steps stand between this and actually working:
+  yet live — three manual steps stand between this and actually working:
   1. Submit the template in Meta Business Manager: name
      `appointment_reminder_24h`, category **Utility**, body exactly:
      `Hi {{1}}, this is a reminder from Jananam Fertility Centre about
@@ -183,7 +183,7 @@ fresh look at what's still missing for "personalized and intuitive."
      `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, and
      `WHATSAPP_BUSINESS_ACCOUNT_ID` on the new **jananam-fertility-reminders**
      Render Cron Job (same values as the `jananam-fertility-backend`
-     service's Environment tab -- Render doesn't let these be copied
+     service's Environment tab — Render doesn't let these be copied
      programmatically).
   3. Push this session's commits and trigger the cron job's first deploy.
 
@@ -193,17 +193,17 @@ fresh look at what's still missing for "personalized and intuitive."
   anything (refuses/no-ops otherwise), sends only to opted-in patients,
   and marks each appointment's `reminder_sent_at` so it's never reminded
   twice.
-- [ ] **Asha never uses the patient's name.** `display_name` (the WhatsApp
-  profile name) is captured but never surfaced in any message -- every
-  reply, including the welcome message, is generic. The risk: a WhatsApp
-  profile name isn't always a real, presentable first name (emoji,
-  nicknames, a shared family/business name), so using it uncritically
-  could occasionally read as odd rather than warm. Fixable with a sanity
-  filter (only use it if it looks like a plausible name), but that's a
-  judgment call on tone, not a pure bug fix.
+- [x] **Asha never uses the patient's name.** Fixed. `_looks_like_a_name()`
+  filters `display_name` (rejects emoji, digits, multi-word ALL-CAPS,
+  business-y words like "clinic"/"traders") before it's ever used;
+  `_first_name_for()` prefers the patient's own `full_name` from a real
+  booking (higher confidence) over the WhatsApp display name, and returns
+  `None` — stay generic — if neither is trustworthy. Used in the welcome
+  message, the three static info replies (see below), and passed to the AI
+  as a soft "you may use this, don't force it" hint.
 - [ ] **No patient-history awareness in the AI conversation.** Once
   someone has booked before, Asha still starts from a blank slate each
-  time -- she only sees the last 10 messages, never whether this contact
+  time — she only sees the last 10 messages, never whether this contact
   already has an upcoming or past appointment (that only surfaces if they
   explicitly type "my appointments"). A truly intuitive assistant would
   notice a returning, already-booked patient and talk accordingly ("how
@@ -212,7 +212,7 @@ fresh look at what's still missing for "personalized and intuitive."
   population; the bot only operates in English. The AI model itself is
   polyglot, but the static menu/button text (main menu, booking flow,
   info panels) is all hardcoded English strings that would need
-  duplicating per language, plus a way to detect/switch -- a real project,
+  duplicating per language, plus a way to detect/switch — a real project,
   not a quick fix.
 - [ ] **Webhook processes everything synchronously, including the AI
   call.** Meta expects a webhook to acknowledge within roughly 10 seconds
@@ -222,7 +222,7 @@ fresh look at what's still missing for "personalized and intuitive."
   twice on a Meta retry, but sustained slow AI responses could still get
   this integration flagged as unreliable by Meta over time. Best practice
   is to acknowledge the webhook immediately and do the actual work in a
-  background task -- a real architecture change (needs a task queue or
+  background task — a real architecture change (needs a task queue or
   background-task runner), so flagging rather than changing unprompted.
 
 ## Review — 2026-09-13 (real-conversation bug fixes)
@@ -258,6 +258,47 @@ Found from watching an actual test conversation.
   moved the Consultation/Follow-up/NT Scan labels into a separate
   "booking mechanics only" section the model is told to bring up only when
   booking itself is the topic.
+
+## Review — 2026-09-13, part 2 (warmth pass toward the "companion" vision)
+
+From a gap review specifically against the vision of a warm, companion-style
+bot that converts visitors into bookings. Tackled the two cheapest, safest
+wins from that list; the other three (no memory of returning patients, no
+automatic re-engagement for a stalled conversation, English only) are still
+open below and are a larger lift each.
+
+- [x] **Asha never used the patient's name** — see the fix note earlier in
+  this file, under "P2 — quality, scale & measurement" → "Asha never uses
+  the patient's name."
+- [x] **The three static info replies (treatments/about-clinic/costs) read
+  like a pasted brochure — identical text for everyone, no matter who
+  asked or why.** Chose the safe option over routing them through the AI
+  (which would've meant a small added cost/latency and a small residual
+  risk of the model drifting from the reviewed facts): kept the exact
+  same staff-reviewed factual paragraphs untouched (now
+  `_TREATMENTS_INFO_BODY` / `_ABOUT_CLINIC_INFO_BODY` / `_COSTS_INFO_BODY`),
+  and wrapped each in a personalized opener that uses the contact's name
+  and/or whatever topic first brought them in when either is known (e.g.
+  "Happy to walk you through this, Priya — especially since you mentioned
+  egg freezing."). Zero added AI cost, zero risk of the facts themselves
+  drifting — only the wrapper sentence changes per contact.
+
+### Still open from that same review
+
+- [ ] **No memory of a returning or already-engaged patient.** Every
+  conversation still starts from a blank slate unless the contact
+  explicitly types "my appointments" — Asha doesn't proactively recognize
+  someone who's already booked, or check in after a visit happened
+  ("how did your consultation go?"). The biggest remaining piece for the
+  "companion" feel.
+- [ ] **No automatic re-engagement for a stalled or abandoned
+  conversation.** If someone shows real interest, or starts picking a
+  booking type/date and goes quiet, nothing follows up automatically — the
+  only re-engagement tool is a manual, cohort-wide "retarget" campaign
+  staff trigger from the admin panel. Probably the single highest-leverage
+  item for "convert visitors into bookings" specifically.
+- [ ] **English only**, in a market (Chennai) with a large Tamil- and
+  Hindi-speaking population — see the fuller note further up in this file.
 
 ---
 *Last updated: 2026-09-13.*

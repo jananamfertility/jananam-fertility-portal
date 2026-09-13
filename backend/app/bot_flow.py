@@ -74,21 +74,13 @@ def _has_explicit_booking_intent(lowered_text: str) -> bool:
     return any(kw in lowered_text for kw in _BOOKING_INTENT_SUBSTRINGS)
 
 
-WELCOME_TEXT = (
-    "Hi! 👋 I'm Asha, Jananam Fertility Centre's AI care assistant. I'm here to answer your "
-    "questions and help you book a Consultation, Follow-up, or NT Scan — whatever's easiest for "
-    "you.\n\n"
-    "Before we continue: reply YES to allow us to send appointment reminders and occasional "
-    "updates here on WhatsApp. You can reply STOP at any time to opt out."
-)
-
 # The website's click-to-chat button pre-fills a message that now varies by
 # page -- e.g. "Hi, I'd like to know more about Egg Freezing" -- so the very
 # first message a contact ever sends is a useful hint about what brought them
-# in. Used only to personalize the welcome text's opening line (falls back to
-# the generic WELCOME_TEXT when it doesn't match) and is also stored as-is on
-# the conversation as source_context, to softly steer the AI's later replies
-# (see ai_bot.get_reply's source_context param).
+# in. Used to personalize the welcome text's opening line and the static
+# info replies below, and is also stored as-is on the conversation as
+# source_context, to softly steer the AI's later replies (see
+# ai_bot.get_reply's source_context param).
 _SOURCE_TOPIC_RE = re.compile(r"know more about\s+(.+)", re.IGNORECASE)
 
 
@@ -104,47 +96,157 @@ def _extract_topic(source_text: str | None) -> str | None:
     return topic
 
 
-def _welcome_text_for(source_text: str | None) -> str:
+# ---------------------------------------------------------------------------
+# Name personalization
+# ---------------------------------------------------------------------------
+# A WhatsApp display name isn't always a real, presentable first name -- it
+# can be an emoji, a nickname, a shared family/business name, or a status-
+# style phrase someone's set as their profile name. Used wrongly, a name
+# feels worse than not using one at all, so this is deliberately
+# conservative: when in doubt it returns False and the bot just stays
+# generic rather than guess.
+_NAME_JUNK_WORDS = {
+    "clinic", "hospital", "official", "pvt", "ltd", "llc", "inc", "store",
+    "shop", "wholesale", "traders", "enterprises", "services", "solutions",
+    "wellness", "care", "center", "centre",
+}
+
+
+def _looks_like_a_name(candidate: str | None) -> bool:
+    if not candidate:
+        return False
+    text = candidate.strip()
+    if not (2 <= len(text) <= 30):
+        return False
+    words = text.split()
+    if not (1 <= len(words) <= 3):
+        return False
+    if any(ch.isdigit() for ch in text):
+        return False
+    # Letters (any script -- plenty of contacts' names aren't ASCII), spaces,
+    # hyphens, apostrophes and dots (for initials like "A.K.") only -- an
+    # emoji, most punctuation, or a URL/handle-style name fails this.
+    if not all(ch.isalpha() or ch in " .'-" for ch in text):
+        return False
+    if text.isupper() and len(words) > 1:
+        # Multi-word all-caps reads more like a business name than a person
+        # introducing themselves.
+        return False
+    if any(w.lower() in _NAME_JUNK_WORDS for w in words):
+        return False
+    return True
+
+
+def _first_name_for(supabase, conversation: dict, phone: str) -> str | None:
+    """
+    Best available first name for personalizing a reply, in order of trust:
+    1. The patient's own full_name, given directly when booking -- highest
+       confidence, since this is what they told the clinic their name is.
+    2. Their WhatsApp display name, if it passes _looks_like_a_name.
+    3. None -- stay generic rather than risk an odd or wrong-sounding name.
+    """
+    existing_name = _existing_patient_name(supabase, phone)
+    if existing_name:
+        first = existing_name.strip().split()[0]
+        if first:
+            return first.capitalize()
+
+    display_name = conversation.get("display_name")
+    if _looks_like_a_name(display_name):
+        return display_name.strip().split()[0].capitalize()
+
+    return None
+
+
+def _welcome_text_for(source_text: str | None, first_name: str | None = None) -> str:
+    greeting = f"Hi {first_name}!" if first_name else "Hi!"
     topic = _extract_topic(source_text)
     if not topic:
-        return WELCOME_TEXT
+        return (
+            f"{greeting} 👋 I'm Asha, Jananam Fertility Centre's AI care assistant. I'm here to answer "
+            "your questions and help you book a Consultation, Follow-up, or NT Scan — whatever's "
+            "easiest for you.\n\n"
+            "Before we continue: reply YES to allow us to send appointment reminders and occasional "
+            "updates here on WhatsApp. You can reply STOP at any time to opt out."
+        )
     return (
-        f"Hi! 👋 I'm Asha, Jananam Fertility Centre's AI care assistant. I saw you're interested "
+        f"{greeting} 👋 I'm Asha, Jananam Fertility Centre's AI care assistant. I saw you're interested "
         f"in {topic} — happy to help with any questions, or book a Consultation, Follow-up, or "
         "NT Scan whenever you're ready.\n\n"
         "Before we continue: reply YES to allow us to send appointment reminders and occasional "
         "updates here on WhatsApp. You can reply STOP at any time to opt out."
     )
 
-# Static, staff-reviewed copy for the top-of-funnel main menu taps — deliberately
-# NOT AI-generated, so what a prospective patient reads about treatments, the
-# clinic, and costs is accurate and consistent every time, with no model-call
-# latency/cost or hallucination risk. Facts sourced from jananamfertility.com;
-# review these if the site's claims ever change.
-_TREATMENTS_INFO_TEXT = (
+# Static, staff-reviewed FACTS for the top-of-funnel main menu taps —
+# deliberately NOT AI-generated, so what a prospective patient reads about
+# treatments, the clinic, and costs is accurate and consistent every time,
+# with no model-call latency/cost or hallucination risk. Facts sourced from
+# jananamfertility.com; review these if the site's claims ever change.
+#
+# The wrapper functions below (_treatments_info_text etc.) add a warm,
+# personalized opener/closer around this exact same reviewed body text --
+# using the contact's name and/or whatever topic first brought them in, when
+# known -- without changing a single word of the facts themselves.
+_TREATMENTS_INFO_BODY = (
     "We offer a full range of fertility treatments: IVF, IUI, ICSI/PICSI, donor egg IVF, "
     "fertility preservation (egg, embryo, and sperm freezing), and NT scans — all through our "
     "own on-site, ART-certified embryology lab.\n\n"
     "Every treatment plan is personalised after a proper evaluation with the doctor — there's "
-    "no one-size-fits-all approach here.\n\n"
-    "Reply MENU to see more, or ask me anything about a specific treatment."
+    "no one-size-fits-all approach here."
 )
-_ABOUT_CLINIC_INFO_TEXT = (
+_ABOUT_CLINIC_INFO_BODY = (
     "Jananam Fertility Centre has been serving patients in Neelankarai, Chennai since 2013, led "
     "by Dr. Vani Sundarapandian (MD, DGO, MRCOG-UK), who brings 25+ years of experience in "
     "reproductive medicine.\n\n"
     "We're a single-specialty fertility clinic — this is the only thing we focus on, not one "
-    "department among many.\n\n"
-    "Reply MENU to see more, or ask me anything."
+    "department among many."
 )
-_COSTS_INFO_TEXT = (
+_COSTS_INFO_BODY = (
     "We believe in transparency: your treatment plan and its costs are discussed clearly with "
     "you before anything begins, with no hidden charges or surprise add-ons.\n\n"
     "A first consultation lets the doctor understand your situation and give you an accurate, "
     "personalised cost estimate — every case is different, so we don't quote prices blind over "
-    "WhatsApp.\n\n"
-    "Reply MENU to see more, or BOOK to schedule a consultation."
+    "WhatsApp."
 )
+
+
+def _treatments_info_text(first_name: str | None, topic: str | None) -> str:
+    if first_name and topic:
+        opener = f"Happy to walk you through this, {first_name} — especially since you mentioned {topic}."
+    elif topic:
+        opener = f"Happy to walk you through this — especially since you mentioned {topic}."
+    elif first_name:
+        opener = f"Happy to walk you through this, {first_name}."
+    else:
+        opener = "Happy to walk you through this."
+    return (
+        f"{opener}\n\n{_TREATMENTS_INFO_BODY}\n\n"
+        "Reply MENU to see more, or ask me anything about a specific treatment."
+    )
+
+
+def _about_clinic_info_text(first_name: str | None, topic: str | None) -> str:
+    if first_name and topic:
+        opener = f"Glad you asked, {first_name} — especially while you're exploring {topic}, here's a bit about us."
+    elif topic:
+        opener = f"Glad you asked — especially while you're exploring {topic}, here's a bit about us."
+    elif first_name:
+        opener = f"Glad you asked, {first_name} — here's a bit about us."
+    else:
+        opener = "Glad you asked — here's a bit about us."
+    return f"{opener}\n\n{_ABOUT_CLINIC_INFO_BODY}\n\nReply MENU to see more, or ask me anything."
+
+
+def _costs_info_text(first_name: str | None, topic: str | None) -> str:
+    if first_name and topic:
+        opener = f"Good question, {first_name}, especially with {topic} in mind — here's how we approach it."
+    elif topic:
+        opener = f"Good question, especially with {topic} in mind — here's how we approach it."
+    elif first_name:
+        opener = f"Good question, {first_name} — here's how we approach it."
+    else:
+        opener = "Good question — here's how we approach it."
+    return f"{opener}\n\n{_COSTS_INFO_BODY}\n\nReply MENU to see more, or BOOK to schedule a consultation."
 
 _STAGE_ORDER = ["awareness", "interest", "desire", "action", "booked"]
 
@@ -472,19 +574,25 @@ def _handle_interactive_reply(supabase, conversation: dict, phone: str, reply_id
     if reply_id == "menu_learn_treatments":
         _set_stage(supabase, conversation, "awareness")
         log_event(supabase, conversation["id"], "message_in", metadata={"menu_tap": "learn_treatments"})
-        wa.send_text(phone, _TREATMENTS_INFO_TEXT)
+        first_name = _first_name_for(supabase, conversation, phone)
+        topic = _extract_topic(conversation.get("source_context"))
+        wa.send_text(phone, _treatments_info_text(first_name, topic))
         return
 
     if reply_id == "menu_about_clinic":
         _set_stage(supabase, conversation, "interest")
         log_event(supabase, conversation["id"], "message_in", metadata={"menu_tap": "about_clinic"})
-        wa.send_text(phone, _ABOUT_CLINIC_INFO_TEXT)
+        first_name = _first_name_for(supabase, conversation, phone)
+        topic = _extract_topic(conversation.get("source_context"))
+        wa.send_text(phone, _about_clinic_info_text(first_name, topic))
         return
 
     if reply_id == "menu_cost_expect":
         _set_stage(supabase, conversation, "desire")
         log_event(supabase, conversation["id"], "message_in", metadata={"menu_tap": "cost_expect"})
-        wa.send_text(phone, _COSTS_INFO_TEXT)
+        first_name = _first_name_for(supabase, conversation, phone)
+        topic = _extract_topic(conversation.get("source_context"))
+        wa.send_text(phone, _costs_info_text(first_name, topic))
         return
 
     if reply_id == "menu_book":
@@ -793,7 +901,8 @@ def handle_inbound_message(
             {"source_context": source_context, "awaiting_opt_in_reply": True}
         ).eq("id", conversation["id"]).execute()
         conversation["source_context"] = source_context
-        wa.send_text(phone, _welcome_text_for(body_text))
+        first_name = _first_name_for(supabase, conversation, phone)
+        wa.send_text(phone, _welcome_text_for(body_text, first_name))
         return
 
     # --- plain greetings get the tappable main menu directly, not AI chatter ---
@@ -827,11 +936,13 @@ def handle_inbound_message(
         if m["body"]
     ]
 
+    first_name = _first_name_for(supabase, conversation, phone)
     result = get_reply(
         conversation["funnel_stage"],
         recent_messages,
         body_text[:_AI_MESSAGE_CHAR_LIMIT],
         conversation.get("source_context"),
+        first_name,
     )
     wa.send_text(phone, result["reply"])
     supabase.table("whatsapp_messages").insert(
