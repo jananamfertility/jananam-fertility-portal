@@ -225,5 +225,39 @@ fresh look at what's still missing for "personalized and intuitive."
   background task -- a real architecture change (needs a task queue or
   background-task runner), so flagging rather than changing unprompted.
 
+## Review — 2026-09-13 (real-conversation bug fixes)
+
+Found from watching an actual test conversation.
+
+- [x] **A bare "yes" answering any question at all — not just the opt-in
+  prompt — was being swallowed as opt-in confirmation.** A not-yet-opted-in
+  contact who replied "yes" to Asha's own gentle "I can help you book one
+  whenever you're ready" got "Thanks! You're all set." + the main menu
+  instead of moving toward booking, because the opt-in check fired on any
+  literal "yes" from that contact, forever, not just the one reply right
+  after the welcome message. Fixed with a one-shot `awaiting_opt_in_reply`
+  flag (migration `0007_conversation_flow_flags.sql`) that's only true for
+  the single message immediately following the welcome/opt-in prompt.
+- [x] **Saying "yes" to Asha's own booking invitation didn't actually move
+  toward booking.** Even once the opt-in mix-up above is fixed, a bare
+  "yes" contains none of the words `_has_explicit_booking_intent` looks for
+  ("book", "appointment", "schedule"), so it fell through to a plain
+  conversational reply and, at most, a generic menu. Added a second
+  one-shot flag, `ai_offered_booking` (same migration): set whenever
+  Asha's reply wove in the invitation without an explicit ask, and
+  consumed on the very next inbound message — a short affirmative
+  ("yes"/"sure"/"ok"/etc.) now jumps straight to the booking-type menu.
+- [x] **A generic "tell me about the clinic" question got an oddly narrow
+  answer mentioning NT scans.** The system prompt's "what you offer"
+  section listed the three appointment *booking* categories (Consultation/
+  Follow-up/NT Scan) as if they were the clinic's services, so a plain
+  first-touch question surfaced "NT Scan" — a specific pregnancy-monitoring
+  ultrasound — as if it were a headline offering. Rewrote the prompt to
+  describe the clinic in general fertility-care terms (IVF, IUI, ICSI/
+  PICSI, donor egg IVF, fertility preservation) for generic questions, and
+  moved the Consultation/Follow-up/NT Scan labels into a separate
+  "booking mechanics only" section the model is told to bring up only when
+  booking itself is the topic.
+
 ---
-*Last updated: 2026-09-12.*
+*Last updated: 2026-09-13.*

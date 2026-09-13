@@ -48,6 +48,15 @@ MY_APPOINTMENTS_WORDS = {
     "my booking", "view appointments", "upcoming appointments",
 }
 _CONFIRM_WORDS = {"yes", "y", "yeah", "yep", "correct", "that's me", "thats me", "right"}
+# Short affirmative replies that count as "accepting" the gentle booking
+# invitation Asha sometimes weaves into a reply -- see ai_offered_booking
+# below. Deliberately a bit broader than _CONFIRM_WORDS (adds "sure"/"ok"/
+# "okay"/"yup") since this is answering a yes/no-shaped offer, not
+# confirming a specific name.
+_AFFIRMATIVE_WORDS = {
+    "yes", "y", "yeah", "yep", "yup", "sure", "ok", "okay", "please",
+    "sounds good", "let's do it", "lets do it", "go ahead",
+}
 # A plain greeting from a returning, already-opted-in contact would otherwise
 # fall straight through to the AI (see handle_inbound_message) and get a
 # conversational reply with no tappable menu at all -- most people open with
@@ -699,22 +708,59 @@ def handle_inbound_message(
     lowered = body_text.lower().strip()
 
     # --- opt-in / opt-out commands, checked before anything else ---
+    # awaiting_opt_in_reply scopes the literal-YES-means-opt-in parsing below
+    # to exactly the one message right after the welcome/opt-in prompt --
+    # otherwise ANY later "yes" (answering some totally different question)
+    # got misread as opt-in confirmation and derailed the conversation. See
+    # migration 0007_conversation_flow_flags.sql for the background.
+    awaiting_opt_in_reply = bool(conversation.get("awaiting_opt_in_reply"))
+
     if lowered in OPT_OUT_WORDS:
         supabase.table("whatsapp_conversations").update(
-            {"opted_in": False, "opted_out_at": _now_iso()}
+            {"opted_in": False, "opted_out_at": _now_iso(), "awaiting_opt_in_reply": False}
         ).eq("id", conversation["id"]).execute()
         log_event(supabase, conversation["id"], "opted_out")
         wa.send_text(phone, "You're unsubscribed from updates. You can still message us here any time.")
         return
 
-    if lowered in OPT_IN_WORDS and not conversation.get("opted_in"):
+    if lowered in OPT_IN_WORDS and not conversation.get("opted_in") and awaiting_opt_in_reply:
         supabase.table("whatsapp_conversations").update(
-            {"opted_in": True, "opted_in_at": _now_iso()}
+            {"opted_in": True, "opted_in_at": _now_iso(), "awaiting_opt_in_reply": False}
         ).eq("id", conversation["id"]).execute()
         log_event(supabase, conversation["id"], "opted_in")
         wa.send_text(phone, "Thanks! You're all set.")
         _send_main_menu(phone)
         return
+
+    # The opt-in prompt only gets that one chance to be read as consent. If
+    # we get here, this message wasn't a literal YES/STOP, so the contact
+    # either ignored the prompt or already handled it earlier -- clear the
+    # flag so a "yes" answering some later, unrelated question is never
+    # again misread as opt-in confirmation.
+    if awaiting_opt_in_reply:
+        supabase.table("whatsapp_conversations").update({"awaiting_opt_in_reply": False}).eq(
+            "id", conversation["id"]
+        ).execute()
+        conversation["awaiting_opt_in_reply"] = False
+
+    # --- accepting a gentle booking invitation Asha wove into her last reply ---
+    # Also one-shot, same reasoning as awaiting_opt_in_reply above: only the
+    # very next message after such an invitation is read as answering it, so
+    # a later unrelated "yes" is never misread as agreeing to book. See
+    # ai_offered_booking's write site near the end of this function.
+    if conversation.get("ai_offered_booking"):
+        supabase.table("whatsapp_conversations").update({"ai_offered_booking": False}).eq(
+            "id", conversation["id"]
+        ).execute()
+        conversation["ai_offered_booking"] = False
+        if lowered in _AFFIRMATIVE_WORDS:
+            _set_stage(supabase, conversation, "action")
+            log_event(supabase, conversation["id"], "message_in", metadata={"accepted_booking_offer": True})
+            _send_type_menu(phone)
+            supabase.table("whatsapp_conversations").update({"messages_since_menu": 0}).eq(
+                "id", conversation["id"]
+            ).execute()
+            return
 
     if lowered in RESTART_WORDS:
         _set_pending(supabase, conversation, None)
@@ -743,9 +789,9 @@ def handle_inbound_message(
     # None here reliably means "this contact has never messaged before".)
     if conversation.get("last_inbound_at") is None:
         source_context = body_text[:500]
-        supabase.table("whatsapp_conversations").update({"source_context": source_context}).eq(
-            "id", conversation["id"]
-        ).execute()
+        supabase.table("whatsapp_conversations").update(
+            {"source_context": source_context, "awaiting_opt_in_reply": True}
+        ).eq("id", conversation["id"]).execute()
         conversation["source_context"] = source_context
         wa.send_text(phone, _welcome_text_for(body_text))
         return
@@ -810,9 +856,9 @@ def handle_inbound_message(
         # the AI's own reply already tells them to call/go to hospital for a
         # true emergency, this just leaves something tappable either way.
         _send_main_menu(phone)
-        supabase.table("whatsapp_conversations").update({"messages_since_menu": 0}).eq(
-            "id", conversation["id"]
-        ).execute()
+        supabase.table("whatsapp_conversations").update(
+            {"messages_since_menu": 0, "ai_offered_booking": False}
+        ).eq("id", conversation["id"]).execute()
     elif result["should_offer_booking"] and _has_explicit_booking_intent(lowered):
         # The AI thought this was a good moment AND the person's own message
         # actually asked to book -- skip the main menu and jump straight to
@@ -820,9 +866,9 @@ def handle_inbound_message(
         # plain curiosity like "what is ivf" or "what are your charges" was
         # tripping it and skipping the main menu every time.
         _send_type_menu(phone)
-        supabase.table("whatsapp_conversations").update({"messages_since_menu": 0}).eq(
-            "id", conversation["id"]
-        ).execute()
+        supabase.table("whatsapp_conversations").update(
+            {"messages_since_menu": 0, "ai_offered_booking": False}
+        ).eq("id", conversation["id"]).execute()
     else:
         # A plain conversational reply -- don't tack the tappable menu onto
         # every single one of these (it read as two robotic messages back to
@@ -833,7 +879,12 @@ def handle_inbound_message(
         if since_menu >= _MENU_REMINDER_EVERY:
             _send_main_menu(phone)
             since_menu = 0
-        supabase.table("whatsapp_conversations").update({"messages_since_menu": since_menu}).eq(
-            "id", conversation["id"]
-        ).execute()
+        # should_offer_booking here means Asha wove a gentle invitation into
+        # her reply text itself without the person explicitly asking to book
+        # (see the elif above) -- remember that so a short "yes"/"sure" on
+        # their very next message is read as accepting it, instead of just
+        # being ordinary chat that leaves them looking at a generic menu.
+        supabase.table("whatsapp_conversations").update(
+            {"messages_since_menu": since_menu, "ai_offered_booking": result["should_offer_booking"]}
+        ).eq("id", conversation["id"]).execute()
         conversation["messages_since_menu"] = since_menu
