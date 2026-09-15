@@ -12,6 +12,7 @@ silently failing.
 """
 import json
 import logging
+import time
 
 import httpx
 
@@ -234,70 +235,88 @@ def get_reply(
     messages.extend(recent_messages[-8:])
     messages.append({"role": "user", "content": latest_message})
 
+    # OpenRouter occasionally returns HTTP 200 with a completely empty body,
+    # or a 200 with an empty message.content -- both transient upstream
+    # blips, not something retrying immediately with the same request
+    # should reproduce. Rather than surface the canned fallback reply to a
+    # real patient over one flaky response, retry once before giving up.
+    _MAX_ATTEMPTS = 2
     resp = None
-    try:
-        resp = httpx.post(
-            OPENROUTER_URL,
-            headers={
-                "Authorization": f"Bearer {settings.openrouter_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": settings.openrouter_model,
-                "messages": messages,
-                "temperature": 0.4,
-                "max_tokens": 400,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        raw = data["choices"][0]["message"]["content"]
-        if raw:
-            # Some providers OpenRouter routes to (Bedrock-hosted Claude in
-            # particular) don't honor response_format=json_object strictly
-            # and wrap the JSON in a markdown code fence anyway — strip it
-            # so json.loads() below sees plain JSON either way.
-            fenced = raw.strip()
-            if fenced.startswith("```"):
-                fenced = fenced.removeprefix("```json").removeprefix("```")
-                fenced = fenced.removesuffix("```").strip()
-                raw = fenced
-        if not raw:
-            # Some OpenRouter-routed models return an empty content string
-            # instead of an error when they refuse structured JSON output,
-            # or truncate to nothing under max_tokens — log the full
-            # response so this is diagnosable instead of a silent fallback.
-            logger.error(
-                "AI bot got empty content from OpenRouter. finish_reason=%s full_response=%s",
-                data["choices"][0].get("finish_reason"),
-                data,
-            )
-            raise ValueError("empty content from model")
-        parsed = json.loads(raw)
-        suggested = clamp_forward(current_stage, parsed.get("suggested_stage", current_stage))
-        return {
-            "reply": str(parsed.get("reply") or _FALLBACK_REPLY)[:1000],
-            "suggested_stage": suggested,
-            "should_offer_booking": bool(parsed.get("should_offer_booking", False)),
-            "needs_human": bool(parsed.get("needs_human", False)),
-        }
-    except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError) as exc:
-        body_preview = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
-            body_preview = resp.text[:500]
-        except Exception:
-            pass
-        logger.error(
-            "AI bot call failed, falling back: %s | status=%s body=%s",
-            exc,
-            getattr(resp, "status_code", None),
-            body_preview,
-        )
-        return {
-            "reply": _FALLBACK_REPLY,
-            "suggested_stage": current_stage,
-            "should_offer_booking": True,
-            "needs_human": False,
-        }
+            resp = httpx.post(
+                OPENROUTER_URL,
+                headers={
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": settings.openrouter_model,
+                    "messages": messages,
+                    "temperature": 0.4,
+                    "max_tokens": 400,
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            raw = data["choices"][0]["message"]["content"]
+            if raw:
+                # Some providers OpenRouter routes to (Bedrock-hosted Claude in
+                # particular) don't honor response_format=json_object strictly
+                # and wrap the JSON in a markdown code fence anyway — strip it
+                # so json.loads() below sees plain JSON either way.
+                fenced = raw.strip()
+                if fenced.startswith("```"):
+                    fenced = fenced.removeprefix("```json").removeprefix("```")
+                    fenced = fenced.removesuffix("```").strip()
+                    raw = fenced
+            if not raw:
+                # Some OpenRouter-routed models return an empty content string
+                # instead of an error when they refuse structured JSON output,
+                # or truncate to nothing under max_tokens — log the full
+                # response so this is diagnosable instead of a silent fallback.
+                logger.error(
+                    "AI bot got empty content from OpenRouter. finish_reason=%s full_response=%s",
+                    data["choices"][0].get("finish_reason"),
+                    data,
+                )
+                raise ValueError("empty content from model")
+            parsed = json.loads(raw)
+            suggested = clamp_forward(current_stage, parsed.get("suggested_stage", current_stage))
+            return {
+                "reply": str(parsed.get("reply") or _FALLBACK_REPLY)[:1000],
+                "suggested_stage": suggested,
+                "should_offer_booking": bool(parsed.get("should_offer_booking", False)),
+                "needs_human": bool(parsed.get("needs_human", False)),
+            }
+        except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError) as exc:
+            body_preview = None
+            try:
+                body_preview = resp.text[:500]
+            except Exception:
+                pass
+            if attempt < _MAX_ATTEMPTS:
+                logger.warning(
+                    "AI bot call failed (attempt %s/%s), retrying: %s | status=%s body=%s",
+                    attempt,
+                    _MAX_ATTEMPTS,
+                    exc,
+                    getattr(resp, "status_code", None),
+                    body_preview,
+                )
+                time.sleep(0.6)
+                continue
+            logger.error(
+                "AI bot call failed, falling back: %s | status=%s body=%s",
+                exc,
+                getattr(resp, "status_code", None),
+                body_preview,
+            )
+            return {
+                "reply": _FALLBACK_REPLY,
+                "suggested_stage": current_stage,
+                "should_offer_booking": True,
+                "needs_human": False,
+            }
