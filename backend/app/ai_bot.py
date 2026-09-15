@@ -22,6 +22,17 @@ logger = logging.getLogger("ai_bot")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# Last-resort backup model, tried only if the primary model (settings.
+# openrouter_model, normally an Anthropic model) fails every one of its own
+# attempts. Deliberately a different vendor/routing path on OpenRouter --
+# real production logs showed the primary failing (HTTP 200 with a
+# completely empty body) on 3 separate requests in under 15 seconds, so a
+# same-vendor fallback could plausibly share whatever's actually flaky.
+# Cheap and fast; only ever invoked during a primary-model outage, so the
+# rare reply in a slightly different voice is worth it to avoid the canned
+# fallback message reaching a real patient.
+_BACKUP_MODEL = "openai/gpt-4o-mini"
+
 SYSTEM_PROMPT = """You are Asha, the WhatsApp assistant for Jananam Fertility Centre, a fertility \
 clinic. You are talking directly to a prospective or existing patient over WhatsApp.
 
@@ -240,13 +251,17 @@ def get_reply(
     # blips. A single retry (tried first) sometimes lands right after the
     # blip clears, but real-world logs show back-to-back failures too --
     # this looks less like one-in-a-million noise and more like a short
-    # (multi-second) rough patch on OpenRouter's end. Three attempts with
-    # a growing pause between them gives a short outage more room to clear
-    # before a real patient sees the canned fallback reply.
+    # (multi-second) rough patch on OpenRouter's end that can outlast a
+    # couple of quick retries. So the last attempt switches to _BACKUP_MODEL
+    # (a different vendor/route) instead of trying the primary a third
+    # time -- if the primary's own pipeline is what's flaky, repeating the
+    # exact same request a third time is unlikely to do better than the
+    # second, but a genuinely different route very likely will.
     _MAX_ATTEMPTS = 3
     _RETRY_DELAYS = [0.5, 2.0]  # before attempt 2, then before attempt 3
     resp = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
+        model_for_attempt = _BACKUP_MODEL if attempt == _MAX_ATTEMPTS else settings.openrouter_model
         try:
             resp = httpx.post(
                 OPENROUTER_URL,
@@ -255,7 +270,7 @@ def get_reply(
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": settings.openrouter_model,
+                    "model": model_for_attempt,
                     "messages": messages,
                     "temperature": 0.4,
                     "max_tokens": 400,
@@ -289,6 +304,12 @@ def get_reply(
                 raise ValueError("empty content from model")
             parsed = json.loads(raw)
             suggested = clamp_forward(current_stage, parsed.get("suggested_stage", current_stage))
+            if model_for_attempt != settings.openrouter_model:
+                # Worth knowing how often the backup model actually had to
+                # step in -- if this starts showing up a lot, the primary
+                # model/route itself needs a closer look, not just this
+                # workaround.
+                logger.info("AI bot reply served by backup model %s (primary failed)", model_for_attempt)
             return {
                 "reply": str(parsed.get("reply") or _FALLBACK_REPLY)[:1000],
                 "suggested_stage": suggested,
@@ -307,9 +328,10 @@ def get_reply(
                 pass
             if attempt < _MAX_ATTEMPTS:
                 logger.warning(
-                    "AI bot call failed (attempt %s/%s), retrying: %s | status=%s request_id=%s body=%s",
+                    "AI bot call failed (attempt %s/%s, model=%s), retrying: %s | status=%s request_id=%s body=%s",
                     attempt,
                     _MAX_ATTEMPTS,
+                    model_for_attempt,
                     exc,
                     getattr(resp, "status_code", None),
                     request_id,
@@ -318,7 +340,8 @@ def get_reply(
                 time.sleep(_RETRY_DELAYS[attempt - 1])
                 continue
             logger.error(
-                "AI bot call failed, falling back: %s | status=%s request_id=%s body=%s",
+                "AI bot call failed, falling back (last attempt used model=%s): %s | status=%s request_id=%s body=%s",
+                model_for_attempt,
                 exc,
                 getattr(resp, "status_code", None),
                 request_id,
