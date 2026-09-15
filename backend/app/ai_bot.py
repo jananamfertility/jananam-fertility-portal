@@ -237,10 +237,14 @@ def get_reply(
 
     # OpenRouter occasionally returns HTTP 200 with a completely empty body,
     # or a 200 with an empty message.content -- both transient upstream
-    # blips, not something retrying immediately with the same request
-    # should reproduce. Rather than surface the canned fallback reply to a
-    # real patient over one flaky response, retry once before giving up.
-    _MAX_ATTEMPTS = 2
+    # blips. A single retry (tried first) sometimes lands right after the
+    # blip clears, but real-world logs show back-to-back failures too --
+    # this looks less like one-in-a-million noise and more like a short
+    # (multi-second) rough patch on OpenRouter's end. Three attempts with
+    # a growing pause between them gives a short outage more room to clear
+    # before a real patient sees the canned fallback reply.
+    _MAX_ATTEMPTS = 3
+    _RETRY_DELAYS = [0.5, 2.0]  # before attempt 2, then before attempt 3
     resp = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
@@ -293,25 +297,31 @@ def get_reply(
             }
         except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError) as exc:
             body_preview = None
+            request_id = None
             try:
                 body_preview = resp.text[:500]
+                # OpenRouter/upstream request id, when present -- worth
+                # having on hand if this needs escalating to their support.
+                request_id = resp.headers.get("x-request-id") or resp.headers.get("cf-ray")
             except Exception:
                 pass
             if attempt < _MAX_ATTEMPTS:
                 logger.warning(
-                    "AI bot call failed (attempt %s/%s), retrying: %s | status=%s body=%s",
+                    "AI bot call failed (attempt %s/%s), retrying: %s | status=%s request_id=%s body=%s",
                     attempt,
                     _MAX_ATTEMPTS,
                     exc,
                     getattr(resp, "status_code", None),
+                    request_id,
                     body_preview,
                 )
-                time.sleep(0.6)
+                time.sleep(_RETRY_DELAYS[attempt - 1])
                 continue
             logger.error(
-                "AI bot call failed, falling back: %s | status=%s body=%s",
+                "AI bot call failed, falling back: %s | status=%s request_id=%s body=%s",
                 exc,
                 getattr(resp, "status_code", None),
+                request_id,
                 body_preview,
             )
             return {
